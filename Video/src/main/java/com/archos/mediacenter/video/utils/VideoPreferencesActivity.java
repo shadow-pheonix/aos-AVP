@@ -1,0 +1,96 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.utils;
+
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.os.Environment;
+import androidx.appcompat.app.AppCompatActivity;
+import android.view.MenuItem;
+import android.view.View;
+
+import com.archos.mediacenter.video.R;
+
+public class VideoPreferencesActivity extends AppCompatActivity {
+
+	final public static String ALLOW_3RD_PARTY_PLAYER = "allow_3rd_party_player";
+	final public static boolean ALLOW_3RD_PARTY_PLAYER_DEFAULT = false;
+    private SharedPreferences.OnSharedPreferenceChangeListener mThemeChangeListener;
+
+    final public static String FOLDER_BROWSING_DEFAULT_FOLDER = "folder_browsing_default_folder";
+    final public static String FOLDER_BROWSING_DEFAULT_FOLDER_DEFAULT = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).getPath();
+    public final static int    FOLDER_PICKER_REQUEST_CODE=2;
+    public static final String EXTRA_LAUNCH_INAPP_PURCHASE = "extra_launch_inapp_purchase";
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        ThemeManager themeManager = ThemeManager.getInstance(this);
+        if (themeManager.isBlackTheme()) {
+            setTheme(R.style.ArchosThemeBlack);
+        } else {
+            setTheme(R.style.ArchosThemeBlue);
+        }
+        super.onCreate(savedInstanceState);
+        themeManager.applyWindowTheme(this);
+        setContentView(R.layout.preferences_video);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setHomeButtonEnabled(true);
+        }
+
+        mThemeChangeListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
+            @Override
+            public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+                if (VideoPreferencesCommon.KEY_APP_THEME.equals(key)) {
+                    recreate();
+                }
+            }
+        };
+        ThemeManager.getInstance(this).registerThemeChangeListener(mThemeChangeListener);
+    }
+
+    public void videoPreferenceOsClick(View v) {
+        //remove because not appropriate links displayed
+        //WebUtils.openWebLink(this,"https://www.opensubtitles.org");
+    }
+    public void videoPreferenceTmdbClick(View v) {
+        // Breaks AndroidTV acceptance: text is cut on edges
+        //WebUtils.openWebLink(this,"https://www.themoviedb.org");
+    }
+    public void videoPreferenceTvdbClick(View v) {
+        // Breaks AndroidTV acceptance: contains non fullscreen ads
+        //WebUtils.openWebLink(this,"https://thetvdb.com");
+    }
+    public void videoPreferenceTraktClick(View v) {
+        WebUtils.openWebLink(this,"https://trakt.tv/");
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mThemeChangeListener != null) {
+            ThemeManager.getInstance(this).unregisterThemeChangeListener(mThemeChangeListener);
+        }
+        super.onDestroy();
+    }
+
+}

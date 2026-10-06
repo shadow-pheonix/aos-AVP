@@ -1,0 +1,108 @@
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:title="@string/preferences_video_licenses" >
+    <PreferenceScreen
+        android:summary="LGPL v2.1"
+        android:title="FFmpeg"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://www.ffmpeg.org/legal.html" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Curl license"
+        android:title="libcurl"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://curl.haxx.se/docs/copyright.html" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="LGPL v2.1"
+        android:title="AudioCompress"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/fluffy-critter/AudioCompress/blob/master/COPYING" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="BSD"
+        android:title="libyuv"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://chromium.googlesource.com/libyuv/libyuv/+/master/LICENSE" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Boost Software License - Version 1.0"
+        android:title="Boost"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://www.boost.org/users/license.html" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="BSD"
+        android:title="libtorrent"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://www.libtorrent.org/" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="LGPL v2.1"
+        android:title="jcifs-ng"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/AgNO3/jcifs-ng" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Unlicense"
+        android:title="trakt-java"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/UweTrottmann/trakt-java" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Unlicense"
+        android:title="tmdb-java"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/UweTrottmann/tmdb-java" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="GNU LGPL and BSD-style license"
+        android:title="jsch"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/mwiede/jsch" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Apache License, Version 2.0"
+        android:title="smbj"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/hierynomus/smbj" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Apache License, Version 2.0"
+        android:title="sshj"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/hierynomus/sshj" />
+    </PreferenceScreen>
+    <PreferenceScreen
+        android:summary="Apache License, Version 2.0"
+        android:title="sardine-android"
+        app:iconSpaceReserved="false">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="https://github.com/thegrizzlylabs/sardine-android" />
+    </PreferenceScreen>
+</PreferenceScreen>

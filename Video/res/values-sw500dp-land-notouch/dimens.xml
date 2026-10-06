@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (C) 2009 The Android Open Source Project
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+          http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<resources xmlns:tools="http://schemas.android.com/tools">
+<dimen name="player2014_bar_width">40dip</dimen>
+    
+    <!-- ============ COVER ROLL ============ -->
+<dimen name="cover_description_floating_large" tools:ignore="PxUsage">17px</dimen>
+<dimen name="cover_description_floating_small" tools:ignore="PxUsage">12px</dimen>
+<dimen name="cover_description_overlay_medium" tools:ignore="PxUsage">9px</dimen>
+<dimen name="cover_description_overlay_small" tools:ignore="PxUsage">7px</dimen>
+
+    <!-- ============ MUSIC & VIDEO BROWSER ============ -->
+<dimen name="content_list_left_margin">18dip</dimen>
+<dimen name="content_list_right_margin">18dip</dimen>
+<dimen name="content_list_vertical_spacing_between_items">1dip</dimen>
+<dimen name="content_grid_vertical_spacing_between_items">12dip</dimen>
+<dimen name="content_list_space_between_thumbnail_and_name">9dip</dimen>
+
+    <!-- ============ GLOBAL RESUME ============ -->
+<dimen name="global_resume_video_height">69dip</dimen>
+<dimen name="global_resume_playbutton_width">36dip</dimen>
+<dimen name="global_resume_playbutton_height">36dip</dimen>
+<dimen name="global_resume_icon_padding_left">22dip</dimen>
+<dimen name="global_resume_icon_padding_right">7dip</dimen>
+
+    <!-- ============ MUSIC BROWSER ============ -->
+    <!-- LIST -->
+    <!-- GRID -->
+
+<dimen name="list_expanded_padding">33dip</dimen>
+
+    <!-- ============ MUSIC PLAYER ============ -->
+
+    <!-- ============ VIDEO BROWSER ============ -->
+<dimen name="video_grid_column_width">142dip</dimen>
+<dimen name="video_grid_poster_width">139dip</dimen>
+<dimen name="video_grid_poster_height">209dip</dimen>
+<dimen name="video_grid_poster_margin_top">1dip</dimen>
+<dimen name="video_grid_poster_margin_left">1dip</dimen>
+<dimen name="video_grid_poster_margin_right">1dip</dimen>
+
+<dimen name="video_details_item_height">183dip</dimen>
+<dimen name="video_details_poster_height">180dip</dimen>
+<dimen name="video_details_poster_width">120dip</dimen>
+<dimen name="video_details_poster_margin_top">1dip</dimen>
+<dimen name="video_details_poster_margin_bottom">10dip</dimen>
+<dimen name="video_details_poster_margin_left">10dip</dimen>
+<dimen name="video_show_details_item_height">135dip</dimen>
+
+<dimen name="video_list_item_height">57dip</dimen>
+<dimen name="video_list_thumbnail_height">54dip</dimen>
+<dimen name="video_list_thumbnail_width">81dip</dimen>
+<dimen name="video_list_thumbnail_margin_top">1dip</dimen>
+<dimen name="video_list_thumbnail_margin_bottom">1dip</dimen>
+<dimen name="video_list_thumbnail_margin_left">1dip</dimen>
+
+<dimen name="item_horizontal_offset">0dp</dimen>
+<dimen name="video_resume_slider_length_list">75dp</dimen>
+    
+<dimen name="connection_button_height">28dip</dimen>
+<dimen name="connection_button_vertical_spacing">2dip</dimen>
+<dimen name="connection_button_padding">12dip</dimen>
+
+   <!-- ============ VIDEO PLAYER ============ -->
+<dimen name="volume_button_vertical_margin">0dip</dimen>
+
+<dimen name="player_time_text_size">14sp</dimen>
+<dimen name="player_button_padding_full">6dip</dimen>
+<dimen name="player_button_padding_half">6dip</dimen>
+<dimen name="player_button_padding_small">1dip</dimen>
+
+<dimen name="player_button_margin_half">2dip</dimen>
+<dimen name="player_subtitles_popup_width">225dip</dimen>
+
+    
+    <!-- based on base/core/res/res/layout/popup_menu_item_layout.xml -->
+    
+<dimen name="track_menu_minWidth">147dip</dimen>
+<dimen name="track_menu_padding">12dip</dimen>
+<dimen name="track_menu_layout_width">36dip</dimen>
+
+<dimen name="subtitles_settings_dialog_margin_small">3dip</dimen>
+<dimen name="subtitles_settings_dialog_margin_large">7dip</dimen>
+<dimen name="subtitles_settings_dialog_margin_outerframe">15dip</dimen>
+<dimen name="subtitles_settings_dialog_sample_min_height">75dip</dimen>
+
+    <!-- ============ SCRAPER ============ -->
+<dimen name="scraper_selection_spinbar_size">30dip</dimen>
+
+<dimen name="auto_scraper_thumbnail_item_height">63dip</dimen>
+<dimen name="auto_scraper_thumbnail_height">60dip</dimen>
+<dimen name="auto_scraper_thumbnail_width">90dip</dimen>
+<dimen name="auto_scraper_thumbnail_margin_top">1dip</dimen>
+<dimen name="auto_scraper_thumbnail_margin_bottom">1dip</dimen>
+<dimen name="auto_scraper_thumbnail_margin_left">1dip</dimen>
+
+<dimen name="auto_scraper_poster_item_height">138dip</dimen>
+<dimen name="auto_scraper_poster_height">135dip</dimen>
+<dimen name="auto_scraper_poster_width">90dip</dimen>
+<dimen name="auto_scraper_poster_margin_top">1dip</dimen>
+<dimen name="auto_scraper_poster_margin_bottom">1dip</dimen>
+<dimen name="auto_scraper_poster_margin_left">1dip</dimen>
+
+    <!-- ============ ALBUMART EXTRACTION ============ -->
+
+    <dimen name="subtitle_color_picker_box_size">30dip</dimen>
+
+</resources>

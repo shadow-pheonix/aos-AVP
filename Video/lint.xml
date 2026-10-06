@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!--
+      Third-party network libraries (Bouncy Castle, Commons Net, Jetty) bundle
+      trust-all managers for optional self-signed certificate handling in local
+      network protocols (FTPS, WebDAV, UPnP).
+      Ignore warnings originating from compiled JAR dependencies while keeping the
+      check active for first-party application source code.
+    -->
+    <issue id="TrustAllX509TrustManager">
+        <ignore path="**/*.jar" />
+    </issue>
+
+    <!--
+      Leanback TV UI customization: Custom Leanback presenters, widgets, and layout
+      subclasses override and reference AndroidX Leanback resources by design
+      for TV D-pad presentation.
+    -->
+    <issue id="PrivateResource">
+        <ignore regexp=".*androidx\.leanback.*" />
+    </issue>
+
+    <!--
+      Nova uses single-source high-resolution raster and vector drawables; full
+      cross-density duplication across legacy densities is not maintained.
+    -->
+    <issue id="IconDensities" severity="ignore" />
+
+    <!--
+      Asymmetrical layout padding/margins are intentional across custom media list
+      rows, badges, and Leanback transport bars.
+    -->
+    <issue id="RtlSymmetry" severity="ignore" />
+</lint>

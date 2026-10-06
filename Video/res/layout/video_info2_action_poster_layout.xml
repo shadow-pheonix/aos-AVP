@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:ignore="InconsistentLayout">
+
+    <LinearLayout  android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="bottom"
+        android:baselineAligned="false"
+        android:id="@+id/posterCard">
+
+            <FrameLayout
+                android:layout_weight="1"
+
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                >
+                <androidx.cardview.widget.CardView
+                    xmlns:card_view="http://schemas.android.com/apk/res-auto"
+                    android:layout_gravity="start"
+                    card_view:cardCornerRadius="12dp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    >
+                    <include
+                        layout="@layout/video_info2_poster_layout"
+                        />
+                </androidx.cardview.widget.CardView>
+            </FrameLayout>
+            <include
+                android:layout_width="0dp"
+                android:layout_marginStart="@dimen/video_info_margin_simple"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                layout="@layout/video_info2_fragment_actions"
+                android:id="@+id/action_buttons_container"
+                android:layout_gravity="bottom" />
+
+        </LinearLayout>
+</merge>

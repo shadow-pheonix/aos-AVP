@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  Android installs content providers before Application.onCreate(). Keep this
+  automatically discovered configuration free of filesystem access so logging
+  cannot block provider startup. CustomApplication loads logback-full.xml on a
+  background thread once the external files directory is available.
+-->
+<configuration>
+    <appender name="logcat" class="ch.qos.logback.classic.android.LogcatAppender">
+        <tagEncoder>
+            <pattern>%logger{200}</pattern>
+        </tagEncoder>
+        <encoder>
+            <pattern>%msg%n</pattern>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>DEBUG</level>
+        </filter>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="logcat"/>
+    </root>
+</configuration>

@@ -1,0 +1,267 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.player.tvmenu;
+
+import android.annotation.SuppressLint;
+import android.content.Context;
+import androidx.appcompat.widget.SwitchCompat;
+import androidx.core.text.HtmlCompat;
+import android.text.SpannableString;
+import android.util.AttributeSet;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewParent;
+import android.widget.Checkable;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.Switch;
+import android.widget.TextView;
+import com.archos.mediacenter.video.R;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Created by alexandre on 24/10/14.
+ */
+public class TVMenuItem extends LinearLayout implements Checkable, TVSlaveView{
+
+    private static final Logger log = LoggerFactory.getLogger(TVMenuItem.class);
+
+    private boolean isChecked;
+    private String text;
+    private boolean isDisabled; // Add this field
+    private OnClickListener ocl;
+    private TVMenuItem slaveView;
+
+    private Context mContext;
+    public TVMenuItem(Context context, AttributeSet attrs, int defStyle)
+    {
+
+        super(context, attrs, defStyle);
+        this.mContext = context;
+        init();
+
+    }
+
+    public TVMenuItem(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        this.mContext = context;
+        init();
+    }
+    public  TVMenuItem(Context context){
+        super(context);
+        this.mContext = context;
+        init();
+    }
+    public void init(){
+        this.text="";
+        this.slaveView=null;
+        isChecked=false;
+        setOnFocusChangeListener(new OnFocusChangeListener() {   
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                // TODO Auto-generated method stub
+                setFocus(hasFocus);
+                if(slaveView!=null)
+                    slaveView.setFocus(hasFocus);
+            }
+        });  
+    }
+    public void setFocus(boolean hasFocus){
+        if (log.isDebugEnabled()) log.debug("setFocus hasFocus:{}", hasFocus);
+        if(hasFocus){
+     
+            this.setBackgroundResource(R.color.video_info_next_prev_button_focused);
+        }
+        else
+            this.setBackground(null);
+    }
+
+    @Override
+    public void setOnClickListener(OnClickListener ocl) {
+        this.ocl = ocl;
+        if (!isDisabled) {
+            findViewById(R.id.info_text).setOnClickListener(ocl);
+        }
+    }
+
+    @Override
+    public void setChecked(boolean checked) {
+        if (isDisabled) return;
+        if(slaveView!=null)
+            slaveView.setChecked(checked);
+        if(findViewById(R.id.info_text)!=null && findViewById(R.id.info_text) instanceof Checkable)
+            ((Checkable)findViewById(R.id.info_text)).setChecked(checked);
+    }
+
+    public boolean isChecked(){
+        if(findViewById(R.id.info_text)!=null && findViewById(R.id.info_text) instanceof Checkable)
+            return ((Checkable)findViewById(R.id.info_text)).isChecked();
+        return false;
+    }
+
+    public boolean isSwitchable() {
+        View infoText = findViewById(R.id.info_text);
+        return infoText instanceof SwitchCompat || infoText instanceof Switch;
+    }
+
+    @Override
+    public void toggle() {
+      
+        if(findViewById(R.id.info_text)!=null && findViewById(R.id.info_text) instanceof Checkable){
+            setChecked(!((Checkable)(findViewById(R.id.info_text))).isChecked());
+        }
+    
+    }
+
+    public void setText(String text){
+        this.text=text;
+        SpannableString spannableText;
+        // Apply SpannableString only for checkable items (RadioButtons)
+        spannableText = new SpannableString(HtmlCompat.fromHtml(text, HtmlCompat.FROM_HTML_MODE_LEGACY));
+        ((TextView) findViewById(R.id.info_text)).setText(spannableText);
+        if(slaveView!=null)
+            slaveView.setText(text);
+    }
+    public String getText() { return text;}
+
+    // send key events to TVMenu in order to skip disabled items and separators in menu navigation
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (event.getKeyCode()!= KeyEvent.KEYCODE_BACK) { // Exclude back button
+                ViewParent parent = getParent();
+                while (parent!= null &&!(parent instanceof TVMenu)) {
+                    parent = parent.getParent();
+                }
+                if (parent instanceof TVMenu) {
+                    if (((TVMenu) parent).onKeyDown(event.getKeyCode(), event)) {
+                        return true;
+                    }
+                    // if onKeyDown returns false, it means we are at a boundary.
+                    if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
+                        // We should not propagate to super.dispatchKeyEvent, because that will
+                        // trigger the default focus search. We should just consume the event.
+                        return true;
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event){
+        if (log.isDebugEnabled()) log.debug("onKeyUp keyCode:{}", keyCode);
+        //click mapping
+        if(TVUtils.isOKKey(keyCode) &&ocl!=null) {
+            this.ocl.onClick(this);
+            return true;
+        }
+        return false;
+    }
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event){
+        if (log.isDebugEnabled()) log.debug("onKeyDown keyCode:{}", keyCode);
+        //click mapping   
+        if(TVUtils.isOKKey(keyCode) &&ocl!=null) {
+            return true;
+        }
+        if (this.getParent() instanceof TVMenu) {
+            return TVUtils.dispatchToCardParent(this, keyCode, event);
+        }
+        if (log.isDebugEnabled()) log.debug("onKeyDown keyCode:{} not handled", keyCode);
+        return false;
+    }
+
+    @Override
+    public void updateSlaveView() {
+        // TODO Auto-generated method stub
+        
+    }
+
+    @Override
+    public View getSlaveView() {
+        // TODO Auto-generated method stub
+        return slaveView;
+    }
+
+    @Override
+    public void setSlaveView(View v) {
+        // TODO Auto-generated method stub
+        if(v instanceof TVMenuItem){
+            slaveView = (TVMenuItem)v;
+            slaveView.setText(text);
+            slaveView.setFocusable(false);
+            slaveView.setChecked(isChecked());
+            slaveView.setVisibility(getVisibility());
+        }
+    }
+
+    public int getCompleteHeight() {
+        // TODO Auto-generated method stub
+        return ((TextView)findViewById(R.id.info_text)).getLineCount()*((TextView)findViewById(R.id.info_text)).getLineHeight();
+    }
+
+    @SuppressLint("InflateParams") // Slave TVMenuItem is inflated detached to be added to slave TVMenu hierarchy
+    @Override
+    public View createSlaveView() {
+        // TODO Auto-generated method stub
+        TVMenuItem slaveView;
+        if(findViewById(R.id.info_text)!=null && findViewById(R.id.info_text) instanceof RadioButton){
+            slaveView = (TVMenuItem)LayoutInflater.from(mContext)
+                    .inflate(R.layout.menu_item_checkable_layout, null);
+        }
+        else if (findViewById(R.id.info_text) != null && (findViewById(R.id.info_text) instanceof SwitchCompat || findViewById(R.id.info_text) instanceof Switch)) {
+            slaveView = (TVMenuItem)LayoutInflater.from(mContext)
+                    .inflate(R.layout.menu_item_switchable_layout, null);
+        }
+        else{
+            slaveView = (TVMenuItem)(View)LayoutInflater.from(mContext)
+                    .inflate(R.layout.menu_item_layout, null);
+        }
+        setSlaveView(slaveView);
+        return slaveView;
+    }
+
+    @Override
+    public void removeSlaveView() {
+        // TODO Auto-generated method stub
+        slaveView=null;
+    }
+
+    public void setDisabled(boolean disabled) {
+        isDisabled = disabled;
+        setFocusable(!disabled);
+        setEnabled(!disabled);
+        setFocusableInTouchMode(!disabled);
+        if (disabled) {
+            setAlpha(0.5f); // Visually indicate the item is disabled
+        } else {
+            setAlpha(1.0f); // Restore the original appearance
+        }
+    }
+
+    public boolean isDisabled() {
+        return isDisabled;
+    }
+
+    public boolean isEnabled() {
+        return !isDisabled;
+    }
+
+}

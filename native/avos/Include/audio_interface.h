@@ -1,0 +1,222 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef _AUDIO_INTERFACE_H
+#define _AUDIO_INTERFACE_H
+
+#include "types.h"
+#include <errno.h>
+
+// No bytes accepted because playback was interrupted; retain and retry output.
+#define AUDIO_WRITE_RETRY (-EAGAIN)
+// Output was recreated; no bytes from this write were accepted. Reset the
+// stream's presentation epoch before retrying the same PCM.
+#define AUDIO_WRITE_RESTARTED (-ESTALE)
+
+#define AUDIO_VOLUME_MAX 100
+#define AUDIO_VOLUME_MIN 0
+#define AUDIO_VOLUME_DEFAULT AUDIO_VOLUME_MAX
+
+#define AUDIO_BALANCE_MIN (-10)
+#define AUDIO_BALANCE_MAX (10)
+
+enum {
+	AUDIO_INPUT_MODE,
+	AUDIO_OUTPUT_MODE,
+	AUDIO_INPUT_OUTPUT_MODE,
+	AUDIO_MIXER_MODE,
+};
+
+typedef struct audio_ctx audio_ctx_t;
+
+typedef int (*audio_interface_impl_init)(void);
+typedef void (*audio_interface_impl_exit)(void);
+typedef audio_ctx_t* (*audio_interface_impl_open)(int);
+typedef int (*audio_interface_impl_close)(audio_ctx_t **ctx);
+typedef int (*audio_interface_impl_start)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_stop)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_pause)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_unpause)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_can_write)(audio_ctx_t *ctx, int len);
+typedef int (*audio_interface_impl_write)(audio_ctx_t *ctx, unsigned char *data, int data_length);
+typedef int (*audio_interface_impl_set_output_params)(audio_ctx_t *ctx, int freq, int channels, int content_channels, int bits, int format);
+typedef int (*audio_interface_impl_get_delay)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_get_latency)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_get_pipeline_latency)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_get_fixed_latency)(audio_ctx_t *ctx);
+typedef void (*audio_interface_impl_flush_output)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_preload)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_mute)(audio_ctx_t *ctx, BOOL fade);
+typedef int (*audio_interface_impl_unmute)(audio_ctx_t *ctx, BOOL fade, BOOL threaded);
+typedef int (*audio_interface_impl_set_output_volume)(audio_ctx_t *ctx, int volume, int balance);
+typedef int (*audio_interface_impl_set_output_volume_l_r)(audio_ctx_t *ctx, int vol_l, int vol_r);
+typedef int (*audio_interface_impl_get_session_id)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_set_passthrough)(audio_ctx_t *ctx, int pass);
+typedef int (*audio_interface_impl_get_passthrough)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_change_audio_speed)(audio_ctx_t *ctx, float speed);
+typedef int (*audio_interface_impl_delay_valid)(audio_ctx_t *ctx);
+typedef const char * (*audio_interface_impl_delay_source)(audio_ctx_t *ctx);
+// For platforms (e.g., Sabrina) where timestamps become valid only after warmup,
+// expose a stability streak so callers can avoid rebasing on the first valid sample.
+typedef int (*audio_interface_impl_delay_valid_streak)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_is_startup_hold_active)(audio_ctx_t *ctx);
+typedef int (*audio_interface_impl_passthrough_playhead_advanced)(audio_ctx_t *ctx);
+typedef void (*audio_interface_impl_invalidate_delay_cache)(audio_ctx_t *ctx);
+typedef void (*audio_interface_impl_add_logical_samples)(audio_ctx_t *ctx, int samples, int accepted_bytes);
+typedef int (*audio_interface_impl_get_and_clear_latency_delta)(audio_ctx_t *ctx);
+// Returns the current AudioTrack presented frame position and sample rate.
+// source: 1=getTimestamp (preferred), 2=getPlaybackHeadPosition (fallback).
+// age_ms: milliseconds since the frame position was last updated (0 for fresh).
+// prefer_fresh=1: skip timestamp cache, call getPlaybackHeadPosition() directly.
+// Returns 1 if valid, 0 if not available.
+#define AT_PRESENTED_FRAMES_SRC_TIMESTAMP 1
+#define AT_PRESENTED_FRAMES_SRC_PLAYHEAD  2
+enum {
+	AT_PRESENTATION_UNOBSERVED = 0,
+	AT_PRESENTATION_INITIALIZING,
+	AT_PRESENTATION_OBSERVED,
+	AT_PRESENTATION_ADVANCING,
+	AT_PRESENTATION_UNAVAILABLE,
+	AT_PRESENTATION_REJECTED,
+};
+typedef struct AUDIO_PRESENTATION_SNAPSHOT {
+	uint64_t generation;
+	int state;
+	uint64_t timestamp_frames;
+	int64_t timestamp_ns;
+	uint64_t playback_head_frames;
+	int source;
+	int rate;
+	int frame_size;
+	int buffer_size;
+	int format;
+	int passthrough;
+	uint64_t logical_samples;
+	uint64_t encoded_bytes;
+	int latency_ms;
+	int fixed_latency_ms;
+	int underrun_count;
+	int64_t observed_wall_ms;
+	int64_t last_advance_wall_ms;
+	int direct_rate_hz;
+	int direct_rate_streak;
+} AUDIO_PRESENTATION_SNAPSHOT;
+typedef int (*audio_interface_impl_get_presented_frames)(
+    audio_ctx_t *ctx, uint64_t *frames, int *rate, int *source, int *age_ms, int prefer_fresh);
+typedef int (*audio_interface_impl_get_written_frames)(
+    audio_ctx_t *ctx, uint64_t *frames, int *rate);
+typedef int (*audio_interface_impl_get_presentation_snapshot)(
+	audio_ctx_t *ctx, AUDIO_PRESENTATION_SNAPSHOT *snapshot);
+
+
+typedef struct audio_interface_impl {
+	const char *name;
+	audio_interface_impl_init init;
+	audio_interface_impl_exit exit;
+	audio_interface_impl_open open;
+	audio_interface_impl_close close;
+	audio_interface_impl_start start;
+	audio_interface_impl_stop stop;
+	audio_interface_impl_pause pause;
+	audio_interface_impl_unpause unpause;
+	audio_interface_impl_can_write can_write;
+	audio_interface_impl_write write;
+	audio_interface_impl_set_output_params set_output_params;
+	audio_interface_impl_get_delay get_delay;
+	audio_interface_impl_get_latency get_latency;
+	audio_interface_impl_get_pipeline_latency get_pipeline_latency;
+	audio_interface_impl_get_fixed_latency get_fixed_latency;
+	audio_interface_impl_flush_output flush_output;
+	audio_interface_impl_preload preload;
+	audio_interface_impl_mute mute;
+	audio_interface_impl_unmute unmute;
+	audio_interface_impl_set_output_volume set_output_volume;
+	audio_interface_impl_set_output_volume_l_r set_output_volume_l_r;
+	audio_interface_impl_get_session_id get_session_id;
+	audio_interface_impl_get_passthrough get_passthrough;
+	audio_interface_impl_set_passthrough set_passthrough;
+	audio_interface_impl_change_audio_speed change_audio_speed;
+	audio_interface_impl_delay_valid delay_valid;
+	audio_interface_impl_delay_source delay_source;
+	audio_interface_impl_delay_valid_streak delay_valid_streak;
+	audio_interface_impl_is_startup_hold_active is_startup_hold_active;
+	audio_interface_impl_passthrough_playhead_advanced passthrough_playhead_advanced;
+	audio_interface_impl_invalidate_delay_cache invalidate_delay_cache;
+	audio_interface_impl_add_logical_samples add_logical_samples;
+	audio_interface_impl_get_and_clear_latency_delta get_and_clear_latency_delta;
+	audio_interface_impl_get_presented_frames get_presented_frames;
+	audio_interface_impl_get_written_frames get_written_frames;
+	audio_interface_impl_get_presentation_snapshot get_presentation_snapshot;
+	// Opt in only when pause freezes queued output without draining or clearing it.
+	int pause_preserves_output;
+} audio_interface_impl_t;
+
+int audio_interface_init(void);
+int audio_interface_exit(void);
+audio_ctx_t *audio_interface_open(int mode);
+int audio_interface_close(audio_ctx_t **ctx);
+int audio_interface_start(audio_ctx_t *ctx);
+int audio_interface_stop(audio_ctx_t *ctx);
+int audio_interface_pause(audio_ctx_t *ctx);
+int audio_interface_unpause(audio_ctx_t *ctx);
+int audio_interface_pause_preserves_output(audio_ctx_t *ctx);
+int audio_interface_can_write(audio_ctx_t *ctx, int len);
+int audio_interface_write(audio_ctx_t *ctx, unsigned char *data, int data_length);
+int audio_interface_set_output_params(audio_ctx_t *ctx, int freq, int channels, int content_channels, int bits, int format);
+int audio_interface_get_delay(audio_ctx_t *ctx);
+int audio_interface_get_latency(audio_ctx_t *ctx);
+// Platform-aware latency estimate used only for guarded startup/fallback policy.
+int audio_interface_get_pipeline_latency(audio_ctx_t *ctx);
+// Fixed downstream portion of the selected latency, excluding sink buffer capacity.
+int audio_interface_get_fixed_latency(audio_ctx_t *ctx);
+int audio_interface_is_delay_valid(audio_ctx_t *ctx);
+const char *audio_interface_get_delay_source(audio_ctx_t *ctx);
+// Returns the number of consecutive valid-delay samples (0 if unsupported).
+int audio_interface_get_delay_valid_streak(audio_ctx_t *ctx);
+int audio_interface_is_startup_hold_active(audio_ctx_t *ctx);
+int audio_interface_passthrough_playhead_advanced(audio_ctx_t *ctx);
+void audio_interface_invalidate_delay_cache(audio_ctx_t *ctx);
+void audio_interface_add_logical_samples(audio_ctx_t *ctx, int samples, int accepted_bytes);
+int  audio_interface_get_and_clear_latency_delta(audio_ctx_t *ctx);
+// prefer_fresh: 0 permits cached evidence, 1 requires recent evidence,
+// 2 requires a direct playhead query (PlaybackParams rate checkpoints).
+int  audio_interface_get_presented_frames(audio_ctx_t *ctx, uint64_t *frames, int *rate, int *source, int *age_ms, int prefer_fresh);
+int  audio_interface_get_written_frames(audio_ctx_t *ctx, uint64_t *frames, int *rate);
+int  audio_interface_get_presentation_snapshot(audio_ctx_t *ctx,
+	AUDIO_PRESENTATION_SNAPSHOT *snapshot);
+void audio_interface_flush_output(audio_ctx_t *ctx);
+int audio_interface_preload(audio_ctx_t *ctx);
+int audio_interface_mute(audio_ctx_t *ctx, BOOL fade);
+int audio_interface_unmute(audio_ctx_t *ctx, BOOL fade, BOOL threaded);
+
+int audio_interface_set_output_volume(audio_ctx_t *ctx, int volume, int balance);
+int audio_interface_set_output_volume_l_r(audio_ctx_t *ctx, int vol_l, int vol_r);
+
+int audio_interface_get_session_id(audio_ctx_t *ctx);
+
+int audio_interface_set_passthrough(audio_ctx_t *ctx, int pass);
+int audio_interface_get_passthrough(audio_ctx_t *ctx);
+
+void audio_interface_set_audio_speed(float speed);
+float audio_interface_get_audio_speed();
+float audio_interface_get_previous_audio_speed();
+void audio_interface_enable_audio_speed(int enable);
+int audio_interface_is_audio_speed_enabled();
+int audio_interface_change_audio_speed(audio_ctx_t *ctx, float speed);
+void audio_interface_set_using_atempo(int using_atempo);
+int audio_interface_is_using_atempo();
+
+#endif

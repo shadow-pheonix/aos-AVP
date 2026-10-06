@@ -1,0 +1,765 @@
+// Copyright 2020 Courville Software
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.leanback.collections;
+
+import android.annotation.SuppressLint;
+
+import android.app.Activity;
+import android.app.ActivityOptions;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AlertDialog;
+import androidx.loader.app.LoaderManager;
+
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import androidx.loader.content.Loader;
+
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import androidx.preference.PreferenceManager;
+import androidx.leanback.app.DetailsFragmentWithLessTopOffset;
+import androidx.leanback.widget.Action;
+import androidx.leanback.widget.ArrayObjectAdapter;
+import androidx.leanback.widget.ClassPresenterSelector;
+import androidx.leanback.widget.CursorObjectAdapter;
+import androidx.leanback.widget.DetailsOverviewRow;
+import androidx.leanback.widget.FullWidthDetailsOverviewSharedElementHelper;
+import androidx.leanback.widget.HeaderItem;
+import androidx.leanback.widget.ListRow;
+import androidx.leanback.widget.ListRowPresenter;
+import androidx.leanback.widget.OnActionClickedListener;
+import androidx.leanback.widget.OnItemViewClickedListener;
+import androidx.leanback.widget.Presenter;
+import androidx.leanback.widget.Row;
+import androidx.leanback.widget.RowPresenter;
+import androidx.core.content.ContextCompat;
+import androidx.palette.graphics.Palette;
+import android.transition.Slide;
+import android.transition.Transition;
+import android.util.Log;
+import android.util.Pair;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.View;
+import android.widget.Toast;
+
+import androidx.loader.content.CursorLoader;
+
+import com.archos.filecorelibrary.FileUtilsQ;
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.browser.Delete;
+import com.archos.mediacenter.video.utils.ThemeManager;
+import com.archos.mediacenter.video.browser.adapters.MovieCollectionAdapter;
+import com.archos.mediacenter.video.browser.adapters.mappers.CollectionCursorMapper;
+import com.archos.mediacenter.video.browser.adapters.mappers.VideoCursorMapper;
+import com.archos.mediacenter.video.browser.adapters.object.Collection;
+import com.archos.mediacenter.video.browser.adapters.object.Movie;
+import com.archos.mediacenter.video.browser.adapters.object.Video;
+import com.archos.mediacenter.video.browser.loader.AllCollectionsLoader;
+import com.archos.mediacenter.video.browser.loader.CollectionLoader;
+import com.archos.mediacenter.video.browser.loader.MovieCollectionLoader;
+import com.archos.mediacenter.video.collections.CollectionsSortOrderEntries;
+import com.archos.mediacenter.video.info.VideoInfoCommonClass;
+import com.archos.mediacenter.video.leanback.CompatibleCursorMapperConverter;
+import com.archos.mediacenter.video.leanback.DetailsBackdropController;
+import com.archos.mediacenter.video.leanback.VideoViewClickedListener;
+import com.archos.mediacenter.video.leanback.details.ArchosDetailsOverviewRowPresenter;
+import com.archos.mediacenter.video.leanback.filebrowsing.ListingActivity;
+import com.archos.mediacenter.video.leanback.overlay.Overlay;
+import com.archos.mediacenter.video.leanback.presenter.PosterImageCardPresenter;
+import com.archos.mediacenter.video.leanback.presenter.PresenterUtils;
+import com.archos.mediacenter.video.player.PlayerActivity;
+import com.archos.mediacenter.video.utils.DbUtils;
+import com.archos.mediacenter.video.utils.PlayUtils;
+import com.archos.mediacenter.video.utils.VideoUtils;
+import com.squareup.picasso.Picasso;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+
+public class CollectionFragment extends DetailsFragmentWithLessTopOffset implements LoaderManager.LoaderCallbacks<Cursor>, Delete.DeleteListener {
+
+    private static final Logger log = LoggerFactory.getLogger(CollectionFragment.class);
+
+    public static final String EXTRA_COLLECTION = "COLLECTION";
+    public static final String EXTRA_COLLECTION_ID = "collection_id";
+    public static final String SHARED_ELEMENT_NAME = "hero";
+
+    public static final int COLLECTION_LOADER_ID = -43;
+
+    public static final int REQUEST_CODE_VIDEO = 8576;
+    public static final int REQUEST_CODE_MARK_WATCHED = 8577;
+
+    private static final int INDEX_DETAILS = 0;
+
+    /** The collection we're displaying */
+    private Collection mCollection;
+    private long mCollectionId;
+
+    private DetailsOverviewRow mDetailsOverviewRow;
+    private ArrayObjectAdapter mRowsAdapter;
+    private MovieCollectionAdapter mMovieCollectionAdapter;
+
+    private DetailsBackdropController mBackdropController;
+    private DetailRowBuilderTask mDetailRowBuilderTask;
+    private RefreshCollectionBitmapTask mRefreshCollectionBitmapTask;
+
+    private ArchosDetailsOverviewRowPresenter mOverviewRowPresenter;
+    private CollectionDetailsDescriptionPresenter mDescriptionPresenter;
+
+    private Overlay mOverlay;
+    private int mColor;
+    private Handler mHandler;
+    private boolean mHasDetailRow;
+    private boolean mShouldDisplayConfirmDelete = false;
+
+    private static final String SAVED_DELETE_URIS = "saved_delete_uris";
+    private static final String SAVED_DELETE_OPERATION = "saved_delete_operation";
+    private static final String SAVED_DELETE_FILE_SIZE = "saved_delete_file_size";
+
+    private Delete delete;
+    private List<Uri> deleteUrisList;
+    private int deleteOperation = Delete.OP_SINGLE_FILE;
+    private long deleteFileSize = 0L;
+
+    private final ActivityResultLauncher<Intent> videoLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> { if (result.getResultCode() == Activity.RESULT_OK) { refreshCollection(); refreshActivity(); } });
+
+    private final ActivityResultLauncher<IntentSenderRequest> deleteLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartIntentSenderForResult(),
+            result -> { // result can be RESULT_OK, RESULT_CANCELED
+                Context context = getActivity();
+                if (log.isDebugEnabled()) log.debug("ActivityResultLauncher deleteLauncher: result {}", result.toString());
+                if (delete == null && getActivity() != null) {
+                    delete = new Delete(CollectionFragment.this, getActivity());
+                }
+                if (delete != null && deleteUrisList != null && !deleteUrisList.isEmpty()) {
+                    boolean isSuccess = result.getResultCode() == Activity.RESULT_OK;
+                    delete.completeSystemDelete(deleteUrisList, isSuccess, deleteOperation, deleteFileSize);
+                }
+            });
+
+    @SuppressWarnings("deprecation") // getSerializableExtra / getParcelableArrayList: API 33+ branch uses typed form; else branch suppressed
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        if (log.isDebugEnabled()) log.debug("onCreate");
+        super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                deleteUrisList = savedInstanceState.getParcelableArrayList(SAVED_DELETE_URIS, Uri.class);
+            } else {
+                deleteUrisList = savedInstanceState.getParcelableArrayList(SAVED_DELETE_URIS);
+            }
+            deleteOperation = savedInstanceState.getInt(SAVED_DELETE_OPERATION, Delete.OP_SINGLE_FILE);
+            deleteFileSize = savedInstanceState.getLong(SAVED_DELETE_FILE_SIZE, 0L);
+        }
+        // pass the right deleteLauncher linked to activity
+        FileUtilsQ.setDeleteLauncher(deleteLauncher);
+        // minSdk is 23 (> 21), so Window.getEnterTransition()/Transition.addListener() -
+        // both public android.transition APIs - are always available; no need for
+        // androidx.leanback's restricted TransitionHelper/TransitionListener wrappers.
+        Transition transition = getActivity().getWindow().getEnterTransition();
+        if(transition!=null) {
+            transition.addListener(new Transition.TransitionListener() {
+                @Override
+                public void onTransitionStart(Transition transition) {
+                    mOverlay.hide();
+                }
+
+                @Override
+                public void onTransitionEnd(Transition transition) {
+                    mOverlay.show();
+                }
+
+                @Override
+                public void onTransitionCancel(Transition transition) {
+                }
+
+                @Override
+                public void onTransitionPause(Transition transition) {
+                }
+
+                @Override
+                public void onTransitionResume(Transition transition) {
+                }
+            });
+        }
+
+        setTopOffsetRatio(0.6f);
+
+        Intent intent = getActivity().getIntent();
+        mCollection = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ? intent.getSerializableExtra(EXTRA_COLLECTION, Collection.class)
+                : (Collection) intent.getSerializableExtra(EXTRA_COLLECTION);
+        if (mCollection != null) mCollectionId = mCollection.getCollectionId();
+        else mCollectionId = intent.getLongExtra(EXTRA_COLLECTION_ID, -1);
+
+        refreshCollection();
+
+        if (log.isDebugEnabled()) log.debug("onCreate: {}", mCollection.getName());
+
+        mColor = ThemeManager.getInstance(getActivity()).getDetailsPrimaryColor();
+        mHandler = new Handler(Looper.getMainLooper());
+        mDescriptionPresenter = new CollectionDetailsDescriptionPresenter();
+        mOverviewRowPresenter = new ArchosDetailsOverviewRowPresenter(mDescriptionPresenter);
+        //be aware of a hack to avoid fullscreen overview : cf onSetRowStatus
+        FullWidthDetailsOverviewSharedElementHelper helper = new FullWidthDetailsOverviewSharedElementHelper();
+        helper.setSharedElementEnterTransition(getActivity(), SHARED_ELEMENT_NAME, 1000);
+        mOverviewRowPresenter.setListener(helper);
+        mOverviewRowPresenter.setBackgroundColor(ThemeManager.getInstance(getActivity()).getDetailsPrimaryColor());
+        mOverviewRowPresenter.setActionsBackgroundColor(getDarkerColor(ThemeManager.getInstance(getActivity()).getDetailsPrimaryColor()));
+        mOverviewRowPresenter.setOnActionClickedListener(new OnActionClickedListener() {
+            @Override
+            public void onActionClicked(Action action) {
+                if (action.getId() == CollectionActionAdapter.ACTION_PLAY) {
+                    playMovie();
+                }
+                else if (action.getId() == CollectionActionAdapter.ACTION_MARK_COLLECTION_AS_WATCHED) {
+                    if (log.isDebugEnabled()) log.debug("mOverviewRowPresenter.setOnActionClickedListener: action watched, collection watched ? {}", mCollection.isWatched());
+                    if (!mCollection.isWatched()) {
+                        DbUtils.markAsRead(getActivity(), mCollection);
+                        refreshCollection();
+                        if (mRefreshCollectionBitmapTask != null) mRefreshCollectionBitmapTask.cancel();
+                        mRefreshCollectionBitmapTask = new RefreshCollectionBitmapTask();
+                        mRefreshCollectionBitmapTask.execute(mCollection);
+                        refreshActivity();
+                    }
+                }
+                else if (action.getId() == CollectionActionAdapter.ACTION_MARK_COLLECTION_AS_NOT_WATCHED) {
+                    if (log.isDebugEnabled()) log.debug("mOverviewRowPresenter.setOnActionClickedListener: action not watched, collection watched ? {}", mCollection.isWatched());
+                    if (mCollection.isWatched()) {
+                        DbUtils.markAsNotRead(getActivity(), mCollection);
+                        refreshCollection();
+                        if (mRefreshCollectionBitmapTask != null) mRefreshCollectionBitmapTask.cancel();
+                        mRefreshCollectionBitmapTask = new RefreshCollectionBitmapTask();
+                        mRefreshCollectionBitmapTask.execute(mCollection);
+                        refreshActivity();
+                    }
+                }
+                else if (action.getId() == CollectionActionAdapter.ACTION_DELETE) {
+                    mShouldDisplayConfirmDelete = true;
+                    ((CollectionActionAdapter)mDetailsOverviewRow.getActionsAdapter()).update(mCollection, mShouldDisplayConfirmDelete);
+                }
+                else if (action.getId() == CollectionActionAdapter.ACTION_CONFIRM_DELETE) {
+                    ArrayList<Uri> uris = new ArrayList<Uri>();
+                    for(String filePath : DbUtils.getFilePaths(getActivity(), mCollection)) {
+                        Uri uri = VideoUtils.getFileUriFromMediaLibPath(filePath);
+                        uris.add(uri);
+                    }
+                    delete = new Delete(CollectionFragment.this, getActivity());
+                    deleteUrisList = uris;
+                    if (uris.size() == 1) {
+                        deleteOperation = Delete.OP_SINGLE_FILE;
+                        delete.startDeleteProcess(uris.get(0));
+                    } else if (uris.size() > 1) {
+                        deleteOperation = Delete.OP_MULTIPLE_FILES;
+                        delete.startMultipleDeleteProcess(uris);
+                    }
+                    mShouldDisplayConfirmDelete = false;
+                    refreshActivity();
+                }
+            }
+        });
+
+        ClassPresenterSelector ps = new ClassPresenterSelector();
+        ps.addClassPresenter(DetailsOverviewRow.class, mOverviewRowPresenter);
+        ps.addClassPresenter(ListRow.class, new ListRowPresenter());
+
+        mRowsAdapter = new ArrayObjectAdapter(ps);
+        mHasDetailRow = false;
+
+        mBackdropController = new DetailsBackdropController(getActivity(), R.id.details_backdrop,
+                VideoInfoCommonClass.getDarkerColor(mColor));
+        mBackdropController.attach();
+
+        setOnItemViewClickedListener(new OnItemViewClickedListener() {
+            @Override
+            public void onItemClicked(Presenter.ViewHolder itemViewHolder, Object item, RowPresenter.ViewHolder rowViewHolder, Row row) {
+                if (item instanceof Video) {
+                    //animate only if episode picture isn't displayed
+                    boolean animate =!((item instanceof Video)&&((Video)item).getPosterUri()!=null);
+                    VideoViewClickedListener.showVideoDetails(getActivity(), (Video) item, itemViewHolder, animate, false, false, -1, videoLauncher);
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onVideoFileRemoved(final Uri videoFile,boolean askForFolderRemoval, final Uri folder) {
+        Activity activity = getActivity();
+        if (activity != null) Toast.makeText(activity, R.string.delete_done, Toast.LENGTH_SHORT).show();
+        if (askForFolderRemoval) {
+            if (activity != null) {
+                AlertDialog.Builder b = new AlertDialog.Builder(activity).setTitle("");
+                b.setIcon(R.drawable.filetype_new_folder);
+                b.setMessage(R.string.confirm_delete_parent_folder);
+                b.setNegativeButton(R.string.no, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        sendDeleteResult(videoFile);
+                    }
+                })
+                        .setPositiveButton(R.string.yes, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialogInterface, int i) {
+                                delete = new Delete(CollectionFragment.this, activity);
+                                deleteOperation = Delete.OP_FOLDER;
+                                deleteUrisList = Collections.singletonList(folder);
+                                delete.deleteFolder(folder);
+                            }
+                        });
+                b.setOnCancelListener(dialogInterface -> sendDeleteResult(videoFile));
+                b.create().show();
+            }
+        } else {
+            sendDeleteResult(videoFile);
+        }
+    }
+
+    private void sendDeleteResult(Uri file){
+        Intent intent = new Intent();
+        intent.setData(file);
+        Activity activity = getActivity();
+        if (activity != null) activity.setResult(ListingActivity.RESULT_FILE_DELETED, intent);
+    }
+
+    @Override
+    public void onDeleteVideoFailed(Uri videoFile) {
+        Activity activity = getActivity();
+        if (activity != null) Toast.makeText(activity,R.string.delete_error, Toast.LENGTH_SHORT).show();
+    }
+
+    @Override
+    public void onFolderRemoved(Uri folder) {
+        Activity activity = getActivity();
+        if (activity != null) Toast.makeText(activity, R.string.delete_done, Toast.LENGTH_SHORT).show();
+        sendDeleteResult(folder);
+    }
+
+    @Override
+    public void onDeleteSuccess() {
+        Activity activity = getActivity();
+        if (activity != null) activity.finish();
+    }
+
+    private void playMovie() {
+        if (log.isDebugEnabled()) log.debug("playMovie");
+        if (mMovieCollectionAdapter != null) {
+            Movie resumeMovie = null;
+            Movie firstMovie = null;
+            int i = 0;
+            while(i < mMovieCollectionAdapter.getCount() && resumeMovie == null) {
+                Movie movie = (Movie)mMovieCollectionAdapter.getItem(i);
+                if (movie.getResumeMs() != PlayerActivity.LAST_POSITION_END && resumeMovie == null) {
+                    resumeMovie = movie;
+                }
+                if (firstMovie == null)
+                    firstMovie = movie;
+                i++;
+            }
+            if (resumeMovie != null)
+                PlayUtils.startVideo(getActivity(), (Video)resumeMovie, PlayerActivity.RESUME_FROM_LAST_POS, false, -1, null, -1);
+            else if (firstMovie != null)
+                PlayUtils.startVideo(getActivity(), (Video)firstMovie, PlayerActivity.RESUME_FROM_LAST_POS, false, -1, null, -1);
+        }
+    }
+
+    private int getDarkerColor(int color) {
+        float[] hsv = new float[3];
+        Color.colorToHSV(color, hsv);
+        hsv[2] *= 0.8f;
+        return Color.HSVToColor(hsv);
+    }
+
+    @Override
+    public void onViewCreated(View view, Bundle savedInstanceState) {
+        if (log.isDebugEnabled()) log.debug("onViewCreated");
+        super.onViewCreated(view, savedInstanceState);
+        mOverlay = new Overlay(this);
+    }
+
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (deleteUrisList != null) {
+            if (delete != null && delete.getCurrentVideoFileToDeleteSize() > 0) {
+                deleteFileSize = delete.getCurrentVideoFileToDeleteSize();
+            }
+            outState.putParcelableArrayList(SAVED_DELETE_URIS, (deleteUrisList instanceof ArrayList) ? (ArrayList<Uri>) deleteUrisList : new ArrayList<>(deleteUrisList));
+            outState.putInt(SAVED_DELETE_OPERATION, deleteOperation);
+            outState.putLong(SAVED_DELETE_FILE_SIZE, deleteFileSize);
+        }
+    }
+
+    @Override
+    public void onDestroyView() {
+        if (log.isDebugEnabled()) log.debug("onDestroyView");
+        mOverlay.destroy();
+        delete = null;
+        super.onDestroyView();
+    }
+
+    @Override
+    public void onDestroy() {
+        if (log.isDebugEnabled()) log.debug("onDestroy");
+        delete = null;
+        deleteUrisList = null;
+        super.onDestroy();
+    }
+
+    @Override
+    public void onStop() {
+        if (log.isDebugEnabled()) log.debug("onStop");
+        mBackdropController.onStop(mCollection != null, mCollection);
+        if (mDetailRowBuilderTask!=null) {
+            mDetailRowBuilderTask.cancel();
+        }
+        if (mRefreshCollectionBitmapTask != null) mRefreshCollectionBitmapTask.cancel();
+        super.onStop();
+    }
+
+    @Override
+    public void onResume() {
+        if (log.isDebugEnabled()) log.debug("onResume");
+        super.onResume();
+        mOverlay.resume();
+        mBackdropController.restoreIfNeeded();
+
+        // Load the details view
+        if (mDetailRowBuilderTask != null) {
+            mDetailRowBuilderTask.cancel();
+        }
+        mDetailRowBuilderTask = new DetailRowBuilderTask();
+        mDetailRowBuilderTask.execute(mCollection);
+
+        mBackdropController.loadIfIdle(mCollection);
+
+        // Start loading the list of seasons
+        LoaderManager.getInstance(CollectionFragment.this).restartLoader(COLLECTION_LOADER_ID, null, CollectionFragment.this);
+    }
+
+    @Override
+    public void onPause() {
+        if (log.isDebugEnabled()) log.debug("onPause");
+        super.onPause();
+        mOverlay.pause();
+    }
+
+
+    @Override
+    public Loader<Cursor> onCreateLoader(int id, Bundle bundle) {
+        if (log.isDebugEnabled()) log.debug("onCreateLoader");
+        return new MovieCollectionLoader(getActivity(), mCollection.getCollectionId());
+    }
+
+    @Override
+    public void onLoadFinished(Loader<Cursor> cursorLoader, Cursor cursor) {
+        if (getActivity() == null) return;
+        if (log.isDebugEnabled()) log.debug("onLoadFinished: mRowsAdapter size {}", mRowsAdapter.size());
+
+        CursorObjectAdapter movieCollectionAdapter = new CursorObjectAdapter(new PosterImageCardPresenter(getActivity(), PosterImageCardPresenter.EpisodeDisplayMode.FOR_SEASON_LIST));
+        movieCollectionAdapter.setMapper(new CompatibleCursorMapperConverter(new VideoCursorMapper()));
+        ListRow row = new ListRow(1,
+                new HeaderItem(1, getString(R.string.movies)),
+                movieCollectionAdapter);
+
+        // replace row if exists
+        if (mRowsAdapter.size() <2 ) mRowsAdapter.add(row);
+        else mRowsAdapter.replace(1, row);
+
+        if (movieCollectionAdapter != null) movieCollectionAdapter.changeCursor(cursor);
+
+        mMovieCollectionAdapter = new MovieCollectionAdapter(getContext(), cursor);
+        if (log.isDebugEnabled()) log.debug("onLoadFinished: movie collection cursor size {}", cursor.getCount());
+        if (cursor.getCount() == 0) // no more movies in collection
+            getActivity().finish();
+    }
+
+    @Override
+    public void onLoaderReset(Loader<Cursor> cursorLoader) {
+    }
+
+    private class DetailRowBuilderTask {
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private volatile boolean isCancelled = false;
+
+        void execute(Collection collection) {
+            executor.execute(() -> {
+                Pair<Collection, Bitmap> result = null;
+                try {
+                    if (isCancelled || Thread.currentThread().isInterrupted()) return;
+                    if (log.isDebugEnabled()) log.debug("DetailRowBuilderTask.doInBackground collection {}", collection.getName());
+                    Bitmap bitmap = generateCollectionBitmap(collection.getPosterUri(), collection.isWatched());
+                    result = new Pair<>(collection, bitmap);
+                } catch (Exception e) {
+                    log.error("DetailRowBuilderTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+                if (isCancelled) return;
+                final Pair<Collection, Bitmap> finalResult = result;
+                handler.post(() -> {
+                    if (isCancelled) return;
+                    if (finalResult == null) return;
+                    Collection c = finalResult.first;
+                    Bitmap bitmap = finalResult.second;
+
+                    // Buttons
+                    if (mDetailsOverviewRow == null) {
+                        mDetailsOverviewRow = new DetailsOverviewRow(c);
+                        mDetailsOverviewRow.setActionsAdapter(new CollectionActionAdapter(getActivity(), c, mShouldDisplayConfirmDelete));
+                    }
+                    else {
+                        mDetailsOverviewRow.setItem(c);
+                    }
+
+                    if (bitmap != null) {
+                        mOverviewRowPresenter.updateBackgroundColor(mColor);
+                        mOverviewRowPresenter.updateActionsBackgroundColor(getDarkerColor(mColor));
+                        mDetailsOverviewRow.setImageBitmap(getActivity(), bitmap);
+                        mDetailsOverviewRow.setImageScaleUpAllowed(true);
+                    }
+                    else {
+                        mDetailsOverviewRow.setImageDrawable(ContextCompat.getDrawable(getActivity(), R.drawable.filetype_new_video));
+                        mDetailsOverviewRow.setImageScaleUpAllowed(false);
+                    }
+
+                    if (log.isDebugEnabled()) log.debug("mHasDetailRow = {}", mHasDetailRow);
+                    if (!mHasDetailRow) {
+                        if (log.isDebugEnabled()) log.debug("mHasDetailRow is false adding detailOverviewRow");
+                        mBackdropController.setFallbackColor(VideoInfoCommonClass.getDarkerColor(mColor));
+                        mRowsAdapter.add(INDEX_DETAILS, mDetailsOverviewRow);
+                        setAdapter(mRowsAdapter);
+                        mHasDetailRow = true;
+                    } else {
+                        mRowsAdapter.replace(INDEX_DETAILS, mDetailsOverviewRow);
+                        setAdapter(mRowsAdapter);
+                    }
+                });
+            });
+        }
+
+        void cancel() {
+            isCancelled = true;
+            executor.shutdownNow();
+        }
+    }
+
+    public void onKeyDown(int keyCode) {
+        int direction = -1;
+
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MENU:
+                setSelectedPosition(0);
+                break;
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                playMovie();
+                break;
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+                direction = Gravity.END;
+                break;
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                direction = Gravity.START;
+                break;
+        }
+
+        if (direction != -1) {
+            CursorLoader loader = null;
+            if (mCollection != null) {
+                SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+                String sortOrder = prefs.getString(AllCollectionsGridFragment.SORT_PARAM_KEY, CollectionsSortOrderEntries.DEFAULT_SORT);
+                boolean showWatched = prefs.getBoolean(AllCollectionsGridFragment.COLLECTION_WATCHED_KEY, true);
+                loader = new AllCollectionsLoader(getActivity(), sortOrder, showWatched);
+            }
+            if (loader != null) {
+                // Using a CursorLoader but outside of the LoaderManager : need to make sure the Looper is ready
+                if (Looper.myLooper()==null) Looper.prepare();
+                Cursor c = loader.loadInBackground();
+                Collection collection = null;
+                for (int i = 0; i < c.getCount(); i++) {
+                    c.moveToPosition(i);
+                    Collection mc = (Collection)new CompatibleCursorMapperConverter(new CollectionCursorMapper()).convert(c);
+                    if (mc.getCollectionId() == mCollection.getCollectionId()) {
+                        if (direction == Gravity.START) {
+                            if (i - 1 >= 0)
+                                c.moveToPosition(i - 1);
+                            else
+                                c.moveToPosition(c.getCount() - 1);
+                        }
+                        else if (direction == Gravity.END) {
+                            if (i + 1 <= c.getCount() - 1)
+                                c.moveToPosition(i + 1);
+                            else
+                                c.moveToPosition(0);
+                        }
+                        Collection nc = (Collection)new CompatibleCursorMapperConverter(new CollectionCursorMapper()).convert(c);
+                        if (nc.getCollectionId() != mc.getCollectionId())
+                             collection = nc;
+                        break;
+                    }
+                }
+                c.close();
+                if (collection != null) {
+                    if (direction == Gravity.START)
+                        getActivity().getWindow().setExitTransition(new Slide(Gravity.END));
+                    else if (direction == Gravity.END)
+                        getActivity().getWindow().setExitTransition(new Slide(Gravity.START));
+                    final Intent intent = new Intent(getActivity(), CollectionActivity.class);
+                    intent.putExtra(CollectionFragment.EXTRA_COLLECTION, collection);
+                    intent.putExtra(CollectionActivity.SLIDE_TRANSITION_EXTRA, true);
+                    intent.putExtra(CollectionActivity.SLIDE_DIRECTION_EXTRA, direction);
+                    // Launch next activity with slide animation
+                    // Starting from lollipop we need to give an empty "SceneTransitionAnimation" for this to work
+                    mOverlay.hide(); // hide the top-right overlay else it slides across the screen!
+                    startActivity(intent, ActivityOptions.makeSceneTransitionAnimation(getActivity()).toBundle());
+                    // Delay the finish the "old" activity, else it breaks the animation
+                    mHandler.postDelayed(new Runnable() {
+                        public void run() {
+                            Activity activity = getActivity();
+                            if (activity != null) activity.finish(); // better safe than sorry
+                        }
+                    }, 1000);
+                }
+            }
+        }
+    }
+
+    private void refreshCollection() {
+        if (mCollectionId != -1) {
+            // CollectionLoader is a CursorLoader
+            CollectionLoader collectionLoader = new CollectionLoader(getActivity(), mCollectionId);
+            Cursor cursor = collectionLoader.loadInBackground();
+            if(cursor != null && cursor.getCount()>0) {
+                if (log.isDebugEnabled()) log.debug("refreshCollection DatabaseUtils.dumpCursorToString(cursor)");
+                cursor.moveToFirst();
+                CollectionCursorMapper collectionCursorMapper = new CollectionCursorMapper();
+                collectionCursorMapper.bindColumns(cursor);
+                mCollection = (Collection) collectionCursorMapper.bind(cursor);
+                cursor.close();
+            } else {
+                mCollection = null;
+            }
+        }
+    }
+
+    private void refreshActivity() {
+        if (mCollection != null) {
+            if (log.isDebugEnabled()) log.debug("refreshActivity: collection is not empty {}", mCollection.getMovieCollectionCount());
+            ((CollectionActionAdapter)mDetailsOverviewRow.getActionsAdapter()).update(mCollection, mShouldDisplayConfirmDelete);
+            mDetailsOverviewRow.setItem(mCollection);
+        } else {
+            if (log.isDebugEnabled()) log.debug("refreshActivity: collection is null exit!");
+            getActivity().finish();
+        }
+    }
+
+    private Bitmap generateCollectionBitmap(Uri posterUri, boolean isWatched) {
+        Bitmap bitmap = null;
+            try {
+                if (posterUri != null) {
+                    bitmap = Picasso.get()
+                            .load(posterUri)
+                            .noFade() // no fade since we are using activity transition anyway
+                            .resize(getResources().getDimensionPixelSize(R.dimen.poster_width), getResources().getDimensionPixelSize(R.dimen.poster_height))
+                            .centerCrop()
+                            .get();
+                    if (log.isDebugEnabled()) log.debug("generateCollectionBitmap: {}x{} {}", bitmap.getWidth(), bitmap.getHeight(), posterUri);
+                }
+            } catch (IOException e) {
+                log.error("generateCollectionBitmap Picasso load exception", e);
+            } catch (NullPointerException e) { // getDefaultPoster() may return null (seen once at least)
+                log.error("generateCollectionBitmap doInBackground exception", e);
+            } finally {
+                if (bitmap!=null) {
+                    Palette palette = Palette.from(bitmap).generate();
+                    if (palette.getDarkVibrantSwatch() != null)
+                        mColor = palette.getDarkVibrantSwatch().getRgb();
+                    else if (palette.getDarkMutedSwatch() != null)
+                        mColor = palette.getDarkMutedSwatch().getRgb();
+                    else
+                    mColor = ThemeManager.getInstance(getActivity()).getDetailsPrimaryColor();
+                    if (isWatched)
+                        bitmap = PresenterUtils.addWatchedMark(bitmap, getContext());
+                }
+            }
+        return bitmap;
+    }
+
+    private class RefreshCollectionBitmapTask {
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private volatile boolean isCancelled = false;
+
+        void execute(Collection collection) {
+            executor.execute(() -> {
+                Bitmap result = null;
+                try {
+                    if (isCancelled || Thread.currentThread().isInterrupted()) return;
+                    if (log.isDebugEnabled()) log.debug("RefreshCollectionBitmapTask.doInBackground collection {}", collection.getName());
+                    result = generateCollectionBitmap(collection.getPosterUri(), collection.isWatched());
+                } catch (Exception e) {
+                    log.error("RefreshCollectionBitmapTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+                if (isCancelled) return;
+                final Bitmap finalResult = result;
+                handler.post(() -> {
+                    if (isCancelled) return;
+                    if (finalResult != null) {
+                        mOverviewRowPresenter.updateBackgroundColor(mColor);
+                        mOverviewRowPresenter.updateActionsBackgroundColor(getDarkerColor(mColor));
+                        mDetailsOverviewRow.setImageBitmap(getActivity(), finalResult);
+                        mDetailsOverviewRow.setImageScaleUpAllowed(true);
+                        if (mHasDetailRow) {
+                            mRowsAdapter.replace(INDEX_DETAILS, mDetailsOverviewRow);
+                            setAdapter(mRowsAdapter);
+                        }
+                    }
+                });
+            });
+        }
+
+        void cancel() {
+            isCancelled = true;
+            executor.shutdownNow();
+        }
+    }
+}

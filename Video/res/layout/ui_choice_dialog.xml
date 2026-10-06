@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="@dimen/ui_choice_dialog_padding">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginBottom="@dimen/ui_choice_dialog_padding"
+        android:text="@string/ui_choice_title"
+        android:textAppearance="?android:attr/textAppearanceMedium"/>
+
+    <LinearLayout
+        android:id="@+id/choices"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:id="@+id/choice_tv"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/big_button"
+            android:clickable="true"
+            android:layout_marginEnd="@dimen/ui_choice_dialog_padding"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:orientation="vertical"
+            android:padding="@dimen/ui_choice_dialog_padding">
+
+            <ImageView
+                android:layout_width="@dimen/ui_choice_dialog_image_width"
+                android:adjustViewBounds="true"
+                android:layout_height="wrap_content"
+                app:srcCompat="@drawable/ui_choice_leanback"
+        android:contentDescription="@null" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/ui_choice_dialog_padding"
+                android:gravity="center"
+                android:text="@string/ui_choice_tv" />
+
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/choice_tablet"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/big_button"
+            android:clickable="true"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:orientation="vertical"
+            android:padding="@dimen/ui_choice_dialog_padding">
+
+            <ImageView
+                android:layout_width="@dimen/ui_choice_dialog_image_width"
+                android:adjustViewBounds="true"
+                android:layout_height="wrap_content"
+                app:srcCompat="@drawable/ui_choice_tablet"
+        android:contentDescription="@null" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/ui_choice_dialog_padding"
+                android:gravity="center"
+                android:text="@string/ui_choice_tablet" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginTop="@dimen/ui_choice_dialog_padding"
+        android:gravity="center"
+        android:text="@string/ui_choice_help"
+        android:textAppearance="?android:attr/textAppearanceSmall"/>
+</LinearLayout>

@@ -1,0 +1,189 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.leanback.network.smb;
+
+import android.app.Dialog;
+import android.content.DialogInterface;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Bundle;
+import androidx.core.os.BundleCompat;
+import android.text.method.HideReturnsTransformationMethod;
+import android.text.method.PasswordTransformationMethod;
+import android.view.View;
+import android.view.View.OnClickListener;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AlertDialog;
+import androidx.fragment.app.DialogFragment;
+import androidx.preference.PreferenceManager;
+
+import com.archos.filecorelibrary.samba.NetworkCredentialsDatabase;
+import com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.Credential;
+import com.archos.mediacenter.video.R;
+
+public class SmbServerCredentialsDialog extends DialogFragment {
+
+    final private static String SMB_LATEST_USERNAME = "SMB_LATEST_USERNAME";
+
+    final public static String USERNAME = "username";
+    final public static String PASSWORD = "password";
+    final public static String DOMAIN = "domain";
+    final public static String URI = "uri";
+
+    private AlertDialog mDialog;
+    private SharedPreferences mPreferences;
+    private String mUsername = "";
+    private String mPassword = "";
+    private String mDomain = "";
+    private  Uri mUri = null;
+    private onConnectClickListener mOnConnectClick;
+    private OnClickListener mOnCancelClickListener;
+
+    public interface onConnectClickListener{
+        public void onConnectClick(String username, Uri path, String password, String domain);
+    }
+
+    public SmbServerCredentialsDialog() {}
+
+    @Override
+    public Dialog onCreateDialog(Bundle savedInstanceState) {
+        Bundle args  = getArguments();
+        if(args != null){
+            mUsername = args.getString(USERNAME,"");
+            mPassword = args.getString(PASSWORD,"");
+            mUri = BundleCompat.getParcelable(args, URI, Uri.class);
+        }
+        mPreferences = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        // Get latest values from preference
+        if(mUsername.isEmpty()&&mPassword.isEmpty()&&mDomain.isEmpty()){
+            mUsername = mPreferences.getString(SMB_LATEST_USERNAME, "");
+        }
+        if(mPassword.isEmpty()&&mUri!=null){
+            NetworkCredentialsDatabase database = NetworkCredentialsDatabase.getInstance();
+            Credential cred = database.getCredential(mUri.toString());
+            if(cred!=null){
+                mPassword = cred.getPassword();
+                mDomain = cred.getDomain();
+            }
+        }
+        final View v = getActivity().getLayoutInflater().inflate(R.layout.ssh_credential_layout, null);
+
+        v.findViewById(R.id.ssh_spinner).setVisibility(View.GONE);
+        v.findViewById(R.id.remote).setVisibility(View.GONE);
+        v.findViewById(R.id.port).setVisibility(View.GONE);
+        final EditText usernameEt = (EditText)v.findViewById(R.id.username);
+        final EditText passwordEt = (EditText)v.findViewById(R.id.password);
+        final EditText domainEt = (EditText)v.findViewById(R.id.domain);
+        v.findViewById(R.id.domain).setVisibility(View.VISIBLE);
+        v.findViewById(R.id.path).setVisibility(View.GONE);
+        final CheckBox savePassword = (CheckBox)v.findViewById(R.id.save_password);
+        final CheckBox showPassword = (CheckBox)v.findViewById(R.id.show_password_checkbox);
+        showPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton compoundButton, boolean b) {
+                if(!b)
+                    passwordEt.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                else
+                    passwordEt.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
+            }
+        });
+        usernameEt.setText(mUsername);
+        passwordEt.setText(mPassword);
+        domainEt.setText(mDomain);
+        
+        AlertDialog.Builder builder = new AlertDialog.Builder(getActivity())
+        .setTitle(R.string.browse_ftp_server)
+        .setView(v)
+        .setNegativeButton(android.R.string.cancel, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
+                handleCancel();
+            }
+        })
+        .setPositiveButton(android.R.string.ok,new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog,int id) {
+                if(!usernameEt.getText().toString().isEmpty()){
+
+                    String username = usernameEt.getText().toString().trim();
+                    final String password = passwordEt.getText().toString();
+                    String domain = domainEt.getText().toString().trim();
+
+                    if (domain.isEmpty()) {
+                        int ci = username.indexOf('@');
+                        if (ci > 0) {
+                            domain = username.substring(ci + 1).trim();
+                            username = username.substring(0, ci).trim();
+                        } else {
+                            ci = username.indexOf('\\');
+                            if (ci > 0) {
+                                domain = username.substring(0, ci).trim();
+                                username = username.substring(ci + 1).trim();
+                            }
+                        }
+                    }
+
+                    // Store new values to preferences
+                    mPreferences.edit()
+                    .putString(SMB_LATEST_USERNAME, username)
+                    .apply();
+
+                    Credential cred = new Credential(username, password, mUri.toString(), domain, true);
+                    if(savePassword.isChecked())
+                        NetworkCredentialsDatabase.getInstance().saveCredential(cred);
+                    else
+                        NetworkCredentialsDatabase.getInstance().addCredential(cred);
+                    if(mOnConnectClick!=null){
+                        mOnConnectClick.onConnectClick(cred.getUsername(), mUri, password, cred.getDomain());
+                    }
+
+                }
+                else
+                    Toast.makeText(getActivity(), getString(R.string.ssh_remote_address_error), Toast.LENGTH_SHORT).show();
+            }});
+        mDialog = builder.create();
+
+        return mDialog;
+    }
+
+    private boolean mCancelHandled = false;
+
+    private void handleCancel() {
+        if (!mCancelHandled) {
+            mCancelHandled = true;
+            if (mOnCancelClickListener != null) {
+                mOnCancelClickListener.onClick(null);
+            }
+        }
+    }
+
+    @Override
+    public void onCancel(DialogInterface dialog) {
+        super.onCancel(dialog);
+        handleCancel();
+    }
+
+    public void setOnConnectClickListener(onConnectClickListener onConnectClick) {
+        mOnConnectClick = onConnectClick;
+    }
+
+    public void setOnCancelClickListener(OnClickListener onClickListener) {
+        mOnCancelClickListener = onClickListener;
+    }
+
+}

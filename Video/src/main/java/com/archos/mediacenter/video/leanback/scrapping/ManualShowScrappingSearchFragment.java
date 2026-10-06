@@ -1,0 +1,488 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.leanback.scrapping;
+
+import android.app.Activity;
+import android.content.ContentProviderOperation;
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.OperationApplicationException;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.RemoteException;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AlertDialog;
+
+import com.archos.mediacenter.utils.trakt.TraktService;
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.ui.NovaProgressDialog;
+import com.archos.mediaprovider.video.ScraperStore;
+import com.archos.mediaprovider.video.VideoStore;
+import com.archos.mediascraper.BaseTags;
+import com.archos.mediascraper.DebugTimer;
+import com.archos.mediascraper.EpisodeTags;
+import com.archos.mediascraper.NfoWriter;
+import com.archos.mediascraper.ScrapeDetailResult;
+import com.archos.mediascraper.ScrapeSearchResult;
+import com.archos.mediascraper.Scraper;
+import com.archos.mediascraper.ScraperImage;
+import com.archos.mediascraper.SearchResult;
+import com.archos.mediascraper.ShowTags;
+import com.archos.mediascraper.TagsFactory;
+import com.archos.mediascraper.preprocess.SearchInfo;
+import com.archos.mediascraper.preprocess.SearchPreprocessor;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class ManualShowScrappingSearchFragment extends ManualScrappingSearchFragment {
+
+    private static final Logger log = LoggerFactory.getLogger(ManualShowScrappingSearchFragment.class);
+
+    private long mShowId;
+    private String mShowName;
+
+    /** We keep a map to be able to get back the SearchResult for a given BaseTags result when saving at the end */
+    HashMap<BaseTags, SearchResult> mTagsToSearchResultMap = new HashMap<>();
+    private EpSaveTask mEpisodeSaveTask;
+    private SearchInfo mSearchInfo;
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // Get input show and init the SearchInfo ASAP
+        mShowId = getActivity().getIntent().getLongExtra(ManualShowScrappingActivity.EXTRA_TVSHOW_ID, -1);
+        mShowName = getActivity().getIntent().getStringExtra(ManualShowScrappingActivity.EXTRA_TVSHOW_NAME);
+        mSearchInfo = SearchPreprocessor.instance().parseFileBased(Uri.parse("/foo.avi"), Uri.parse("/foo.avi"));
+
+        // Start a search using the search suggestion. It makes it easy for the user to edit it for typo if needed
+        // Allow often the second or third suggestion is the right one
+        setSearchQuery(mShowName, true);
+
+        setTitle(getString(R.string.leanback_scrap_searching_tvshow_hint));
+    }
+
+    @Override
+    protected BaseTags getNfoTags() {
+        return null;
+    }
+
+    @Override
+    protected String getEmptyText() {
+        return getString(R.string.no_results_found);
+    }
+
+    @Override
+    protected String getResultsHeaderText() {
+        return getString(R.string.leanback_scrap_choose_the_description);
+    }
+
+    /**
+     * Do the actual search
+     * @param text to search for
+     * @return
+     */
+    @Override
+    protected ScrapeSearchResult performSearch(String text) {
+        mTagsToSearchResultMap.clear();
+        mSearchInfo.setUserInput(text+ " S1E1");
+        // search for param + " S1E1" so we get show results only, filename is ignored but has to be != null
+        return mScraper.getAllMatches(mSearchInfo);
+    }
+
+    @Override
+    protected BaseTags getTagFromSearchResult(SearchResult result) {
+        // Get the details for this match
+        Bundle b = new Bundle();
+        //b.putBoolean(Scraper.ITEM_REQUEST_BASIC_SHOW, true);
+        b.putBoolean(Scraper.ITEM_REQUEST_ALL_EPISODES, true);
+        b.putBoolean(Scraper.ITEM_REQUEST_REFRESH_SHOW_METADATA, true);
+        //b.putInt(Scraper.ITEM_REQUEST_SEASON, result.getOriginSearchSeason());
+        //b.putInt(Scraper.ITEM_REQUEST_SEASON, 1);
+        // this is required to get the season poster (episode does not have this information on tmdb)
+        //b.putInt(Scraper.ITEM_REQUEST_EPISODE, 1);
+
+        // this is an entire show search not an episode nor a season
+        ScrapeDetailResult detail = mScraper.getDetails(result, b);
+        BaseTags tags = detail.tag;
+
+        // In theory we should get a ShowTags here but in practice we did a search for Episodes.
+        // Hence we need to get the ShowTags from the EpisodeTags
+        if (tags instanceof EpisodeTags) {
+            // replace episodeTags by showTags
+            tags = ((EpisodeTags)tags).getShowTags();
+            // but keep title of the result which is a show
+            if (tags != null) tags.setTitle(result.getTitle());
+        }
+
+        if (tags == null) {
+            // 2015: I didn't test this case...
+            buildNewShowTags(result.getTitle());
+        }
+
+        if (log.isDebugEnabled()) log.debug("put in mTagsToSearchResultMap: {}", tags);
+        mTagsToSearchResultMap.put(tags, result);
+
+        return tags;
+    }
+
+    private static ShowTags buildNewShowTags(String showTitle) {
+        ShowTags showTags = new ShowTags();
+        showTags.setTitle(showTitle);
+        return showTags;
+    }
+
+    @Override
+    protected void saveTagsAndFinish(BaseTags newTags) {
+        // In theory we should get a ShowTags here but in practice we did a search for Episodes.
+        // Hence we need to get the ShowTags from the EpisodeTags
+        if (newTags instanceof ShowTags) {
+            final ShowTags newShowTags = (ShowTags)newTags;
+            String confirmationMessage = getString(R.string.scrap_change_confirmation, mShowName, newShowTags.getTitle());
+            new AlertDialog.Builder(getActivity())
+                    .setMessage(confirmationMessage)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int i) {
+                            mEpisodeSaveTask = new EpSaveTask();
+                            mEpisodeSaveTask.execute(newShowTags);
+                        }
+                    })
+                    .show();
+        }
+        else {
+            if (log.isDebugEnabled()) log.debug("saveTags error should not get a {}", newTags.getClass().getCanonicalName());
+            Toast.makeText(getActivity(), R.string.error, Toast.LENGTH_SHORT).show();
+        }
+    }
+    @Override
+    public void onStop(){
+        super.onStop();
+        if (mEpisodeSaveTask != null)
+            mEpisodeSaveTask.cancel();
+    }
+
+    private class EpSaveTask {
+
+        final int PROGRESS_ID_MAX = -3;
+        final int PROGRESS_ID_FINALIZING = -2;
+
+        final Context mContext;
+        NovaProgressDialog mProgressDialog;
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private volatile boolean isCancelled = false;
+
+        public EpSaveTask() {
+            mContext = getActivity();
+        }
+
+        void execute(ShowTags showTags) {
+            // onPreExecute equivalent — runs on main thread before background work
+            // TODO with progressBar https://stackoverflow.com/questions/56627616/how-to-show-a-progressbar-example-with-percentage-in-android
+            mProgressDialog = new NovaProgressDialog(mContext);
+            mProgressDialog.setTitle(R.string.scrap_change_title);
+            mProgressDialog.setMessage(getString(R.string.scrap_change_initializing));
+            mProgressDialog.setProgressStyle(NovaProgressDialog.STYLE_HORIZONTAL);
+            mProgressDialog.setIndeterminate(false);
+            mProgressDialog.setCancelable(false);
+            mProgressDialog.show();
+
+            executor.execute(() -> {
+                ShowTags newShow = null;
+                try {
+                    if (isCancelled || Thread.currentThread().isInterrupted()) return;
+                    // step 1: find all episodes in database that belong to the old show
+                    List<EpisodeTags> episodeList = getEpisodeList(mShowId);
+                    if (log.isDebugEnabled()) {
+                        log.debug("--------------------\nAll episodes in database that belong to the old show:");
+                        for (EpisodeTags et : episodeList) {
+                            if (log.isDebugEnabled()) log.debug("      S{} E{} {}", et.getSeason(), et.getEpisode(), et.getTitle());
+                        }
+                        if (log.isDebugEnabled()) log.debug("--------------------");
+                    }
+                    // step 2: save new show / episode info for those
+                    newShow = handleSave(showTags, episodeList);
+                    if (log.isDebugEnabled()) log.debug("save finished");
+                } catch (Exception e) {
+                    log.error("EpSaveTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+                if (isCancelled) return;
+                final ShowTags finalNewShow = newShow;
+                handler.post(() -> {
+                    mProgressDialog.dismiss();
+                    if (finalNewShow != null) {
+                        Intent resultIntent = new Intent();
+                        resultIntent.putExtra(ManualShowScrappingActivity.EXTRA_TVSHOW_ID, finalNewShow.getId());
+                        resultIntent.putExtra(ManualShowScrappingActivity.EXTRA_TVSHOW_NAME, finalNewShow.getTitle());
+                        getActivity().setResult(Activity.RESULT_OK, resultIntent);
+                    } else {
+                        Toast.makeText(getActivity(), R.string.error, Toast.LENGTH_SHORT).show();
+                    }
+                    getActivity().finish();
+                });
+            });
+        }
+
+        void cancel() {
+            isCancelled = true;
+            executor.shutdownNow();
+        }
+
+        private void updateProgress(int... values) {
+            handler.post(() -> {
+                if (isCancelled) return;
+                if (values[0] == PROGRESS_ID_MAX) {
+                    mProgressDialog.setMax(values[1]);
+                } else if (values[0] == PROGRESS_ID_FINALIZING) {
+                    mProgressDialog.setMessage(getString(R.string.scrap_change_finalizing));
+                } else {
+                    mProgressDialog.setProgress(values[0]);
+                    mProgressDialog.setMessage(getString(R.string.episode_identification, values[1], values[2]));
+                }
+            });
+        }
+
+        /**
+         * Get the list of episodes in the DB for the given show
+         * @param showId
+         * @return
+         */
+        private List<EpisodeTags> getEpisodeList(long showId) {
+            ArrayList<EpisodeTags> result = new ArrayList<EpisodeTags>();
+            // get EpisodeTags by ShowId
+            final Uri uri = VideoStore.Video.Media.EXTERNAL_CONTENT_URI;
+            final String selection = VideoStore.Video.VideoColumns.SCRAPER_SHOW_ID + "=?";
+            final String[] selectionArgs = new String[] { String.valueOf(showId) };
+            final String sortOrder = VideoStore.Video.VideoColumns.SCRAPER_E_SEASON+", "+VideoStore.Video.VideoColumns.SCRAPER_E_EPISODE;
+            Cursor c = mContext.getContentResolver().query(uri, TagsFactory.VIDEO_COLUMNS, selection, selectionArgs, sortOrder);
+            List<BaseTags> tagsList = TagsFactory.buildTagsFromVideoCursor(c);
+            if (c != null)
+                c.close();
+            // add every EpisodeTags (should be all) to result list
+            if (tagsList != null) {
+                result.ensureCapacity(tagsList.size());
+                for (BaseTags bTag : tagsList) {
+                    if (bTag instanceof EpisodeTags) {
+                        EpisodeTags epTag = (EpisodeTags) bTag;
+                        result.add(epTag);
+                    }
+                }
+            }
+            return result;
+        }
+
+        /**
+         *
+         * @param newShow the new show to save
+         * @param targetEpisodesList the list of episode that are in the DB and must be changed from oldShow to newShow
+         * @return the new show with its ID set up
+         */
+        private ShowTags handleSave(ShowTags newShow, List<EpisodeTags> targetEpisodesList) {
+            updateProgress(PROGRESS_ID_MAX, targetEpisodesList.size());
+
+            // TODO make this nicer
+            NfoWriter.ExportContext exportContext = null;
+            if (NfoWriter.isNfoAutoExportEnabled(mContext)) {
+                exportContext = new NfoWriter.ExportContext();
+            }
+
+            DebugTimer t = new DebugTimer();
+
+            // Get all episodes for the new show
+            SearchResult sr = mTagsToSearchResultMap.get(newShow); // Get the searchResult from the map we built for it
+            Bundle b = new Bundle();
+            // TODO MARC not sure we need all
+            b.putBoolean(Scraper.ITEM_REQUEST_ALL_EPISODES, true);
+            b.putBoolean(Scraper.ITEM_REQUEST_REFRESH_SHOW_METADATA, true);
+            // Only the actual confirmed save needs every season: getTagFromSearchResult()
+            // above reuses this same bundle shape for a lightweight preview per candidate
+            // in the results list, where fetching all seasons per candidate would be wasteful.
+            b.putBoolean(Scraper.ITEM_REQUEST_ALL_SEASONS, true);
+            ScrapeDetailResult detail = Scraper.getDetails(sr, b);
+            HashMap<String, EpisodeTags> epMap = null;
+            if (detail.isOkay()) {
+                if (detail.tag instanceof EpisodeTags)
+                    newShow = ((EpisodeTags)detail.tag).getShowTags();
+                Bundle episodeList = detail.extras;
+                epMap = toMap(episodeList);
+                if (log.isDebugEnabled()) {
+                    log.debug("handleSave: full TMDb refresh returned show onlineId={} original_language={} original_title={} spoken_languages={} episodes={}",
+                            newShow == null ? -1 : newShow.getOnlineId(),
+                            newShow == null ? null : newShow.getOriginalLanguage(),
+                            newShow == null ? null : newShow.getOriginalTitle(),
+                            newShow == null ? null : newShow.getSpokenLanguages(),
+                            epMap == null ? -1 : epMap.size());
+                }
+            } else {
+                // TODO: if notOkay then epMap is null -> should be handled
+                log.warn("handleSave: episode details NOK!");
+                // scraping nok thus we assume that this is the wrong tv show selected for manual scraping and trigger abort
+                return null;
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("--------------------\nAll episodes for the new show:");
+                for (String key : epMap.keySet()) {
+                    if (log.isDebugEnabled()) log.debug("epMap {} -> {} {} {}", key, epMap.get(key).getShowTitle(), epMap.get(key).getSeason(), epMap.get(key).getEpisode());
+                }
+                if (log.isDebugEnabled()) log.debug("--------------------");
+            }
+
+            // Update all episodes
+            final long newShowId = newShow.save(mContext, 0); // second argument is not used in case of ShowTags
+            newShow.setId(newShowId);
+            int size = targetEpisodesList.size();
+            int i = 1;
+            ArrayList<ContentProviderOperation> opList = new ArrayList<ContentProviderOperation>();
+            Map<String, Long> poster2IdMap = createPosterIdMap(mContext, newShowId);
+            for (EpisodeTags oldEpisodeTag : targetEpisodesList) {
+                if (isCancelled || Thread.currentThread().isInterrupted()) return null;
+                log.info("Saving " + (i++) + " of " + size + " episodes.");
+                EpisodeTags newEpisodeTag = getEpisode(epMap, oldEpisodeTag.getEpisode(), oldEpisodeTag.getSeason(), newShow);
+                newEpisodeTag.setVideoId(oldEpisodeTag.getVideoId());
+                newEpisodeTag.setShowId(newShowId);
+                newEpisodeTag.setFile(oldEpisodeTag.getFile());
+                newEpisodeTag.downloadPicture(mContext); //download before saving
+                newEpisodeTag.addSaveOperation(opList, poster2IdMap);
+                newEpisodeTag.downloadPoster(mContext);
+
+                if (exportContext != null) {
+                    Uri file = newEpisodeTag.getFile();
+                    if (file != null) {
+                        try {
+                            NfoWriter.export(file, newEpisodeTag, exportContext);
+                        } catch (IOException e) {
+                            // ignored, probably not writable smb share
+                        }
+                    }
+                }
+                updateProgress(i, newEpisodeTag.getSeason(), newEpisodeTag.getEpisode());
+            }
+            if (exportContext != null) {
+                // drain the queued NFO exports for this batch before returning
+                NfoWriter.awaitPendingExports();
+            }
+            updateProgress(PROGRESS_ID_FINALIZING);
+            log.info("preparations took:" + t.step());
+            if (isCancelled || Thread.currentThread().isInterrupted()) return null;
+            if (opList.size() > 0) {
+                try {
+                    mContext.getContentResolver().applyBatch(ScraperStore.AUTHORITY, opList);
+                } catch (RemoteException e) {
+                    log.error("handleSave failed", e);
+                } catch (OperationApplicationException e) {
+                    log.error("handleSave failed", e);
+                }
+            }
+            TraktService.onNewVideo(mContext);
+            log.info("saving in the end:" + t.step() + " thats:" + t.total());
+            return newShow;
+        }
+
+        private final String[] POSTER_ID_PROJ = {
+                ScraperStore.ShowPosters.ID,        // 0
+                ScraperStore.ShowPosters.LARGE_FILE // 1
+        };
+
+        private Map<String, Long> createPosterIdMap(Context context, long showId) {
+            HashMap<String, Long> result = new HashMap<String, Long>();
+            ContentResolver cr = context.getContentResolver();
+            Uri uri = ContentUris.withAppendedId(ScraperStore.ShowPosters.URI.BY_SHOW_ID, showId);
+            Cursor c = cr.query(uri, POSTER_ID_PROJ, null, null, null);
+            if (c != null) {
+                while (c.moveToNext()) {
+                    Long id = Long.valueOf(c.getLong(0));
+                    String path = c.getString(1);
+                    result.put(path, id);
+                }
+                c.close();
+            }
+            return result;
+        }
+
+        private EpisodeTags getEpisode(Map<String, EpisodeTags> map, int episode, int season, ShowTags show) {
+            // TODO: handle map being null to avoid crash
+            // Note: map is keyed "showId|season|episode|language" (see ShowIdEpisodes.getEpisodes),
+            // not "season|episode", so look it up by matching fields instead of guessing the key.
+            EpisodeTags newEpTag = null;
+            if (map != null) {
+                for (EpisodeTags candidate : map.values()) {
+                    if (candidate.getSeason() == season && candidate.getEpisode() == episode) {
+                        newEpTag = candidate;
+                        break;
+                    }
+                }
+            }
+            if (newEpTag == null) {
+                newEpTag = new EpisodeTags();
+                // assume episode / season of request
+                newEpTag.setSeason(season);
+                newEpTag.setEpisode(episode);
+                newEpTag.setShowTags(show);
+                // also check if there is a poster
+                List<ScraperImage> posters = show.getPosters();
+                if (posters != null) {
+                    if (log.isDebugEnabled()) log.debug( "getEpisode: posters not null");
+                    for (ScraperImage image : posters) {
+                        if (image.getSeason() == season) {
+                            if (log.isDebugEnabled()) log.debug( "getEpisode: posters download poster:{}", image.getLargeUrl());
+                            newEpTag.setPosters(image.asList());
+                            newEpTag.downloadPoster(mContext);
+                            break;
+                        }
+                    }
+                } else {
+                    if (log.isDebugEnabled()) log.debug( "getEpisode: posters is null!");
+                }
+            }
+            return newEpTag;
+        }
+
+        @SuppressWarnings("deprecation") // getParcelable: API 33+ branch uses typed form; else branch suppressed
+        private HashMap<String, EpisodeTags> toMap(Bundle b) {
+            int size = (b!=null) ? b.size() : 0;
+            HashMap<String, EpisodeTags> result = new HashMap<String, EpisodeTags>(size);
+            if (b != null) {
+                b.setClassLoader(BaseTags.class.getClassLoader());
+                for (String key : b.keySet()) {
+                    result.put(key, Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            ? b.getParcelable(key, EpisodeTags.class)
+                            : b.<EpisodeTags>getParcelable(key));
+                }
+            }
+            return result;
+        }
+    }
+}

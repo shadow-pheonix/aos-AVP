@@ -1,0 +1,44 @@
+// Copyright 2017 Archos SA
+// Copyright 2020 Courville Software
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.browser.dialogs;
+
+import android.app.Dialog;
+import android.os.Bundle;
+import androidx.fragment.app.DialogFragment;
+
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.ui.NovaProgressDialog;
+
+/**
+ * Created by alexandre on 18/05/15.
+ */
+public class DeleteDialog extends DialogFragment  {
+    private final static boolean DBG = false;
+    private final static String TAG = "DeleteDialog";
+
+    @Override
+    public Dialog onCreateDialog(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        NovaProgressDialog npd = new NovaProgressDialog(getContext());
+        npd.setMessage(getString(R.string.deleting));
+        npd.setIcon(R.drawable.filetype_video);
+        npd.setIndeterminate(true);
+        npd.setCancelable(true);
+        npd.setCanceledOnTouchOutside(false);
+        return npd;
+    }
+
+}

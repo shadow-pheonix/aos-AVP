@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+    <!-- Only included from layout-land (video_info2_action_poster_layout.xml, video_info2_fragment.xml);
+         the portrait video_info2_fragment.xml defines its titlebar inline instead of via <include>,
+         so there is no meaningful default/portrait variant to add for this layout-land-only chain. -->
+    <merge
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    tools:ignore="MissingDefaultResource"
+    >
+
+        <TextView
+            android:id="@+id/title_view"
+            android:layout_width="match_parent"
+            android:textSize="@dimen/video_info_very_big_text"
+            android:layout_height="wrap_content" />
+        <TextView
+            android:id="@+id/s_e_text_view"
+            android:layout_width="wrap_content"
+            android:layout_below="@+id/title_view"
+            android:textSize="@dimen/video_info_medium_text"
+            android:textStyle="bold"
+            android:layout_height="wrap_content" />
+        <TextView
+            android:id="@+id/episode_title_view"
+            android:layout_below="@+id/title_view"
+            android:layout_toEndOf="@+id/s_e_text_view"
+            android:layout_marginStart="@dimen/video_info_margin_half"
+            android:layout_width="wrap_content"
+            android:textStyle="italic"
+            android:textSize="@dimen/video_info_medium_text"
+            android:layout_height="wrap_content" />
+</merge>

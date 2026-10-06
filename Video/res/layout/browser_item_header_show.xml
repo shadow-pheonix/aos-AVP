@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="fill_parent"
+    android:layout_height="fill_parent"
+    android:background="@drawable/transparent_ripple_no_select"
+    android:clickable="false"
+    android:focusable="false"
+    android:gravity="center_vertical" >
+
+    <ProgressBar
+        style="?android:attr/progressBarStyleLarge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:id="@+id/loading"
+        android:layout_centerInParent="true" />
+
+    <!-- Poster on the left side -->
+
+    <ImageView
+        android:id="@+id/thumbnail"
+        android:layout_width="@dimen/video_details_poster_width"
+        android:layout_height="@dimen/video_details_poster_height"
+        android:layout_marginBottom="@dimen/video_details_poster_margin_bottom"
+        android:layout_marginStart="@dimen/video_details_poster_margin_left"
+        android:layout_marginEnd="@dimen/content_list_space_between_thumbnail_and_name"
+        android:layout_marginTop="@dimen/video_details_poster_margin_top"
+        android:background="@drawable/rounded_rectangle"
+        android:clipToOutline="true"
+        tools:ignore="UnusedAttribute"
+        android:scaleType="centerCrop"
+        android:contentDescription="@null" />
+
+    <ImageView
+        android:id="@+id/flag_3d"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignBottom="@id/thumbnail"
+        android:layout_alignEnd="@id/thumbnail"
+        android:layout_marginBottom="@dimen/video_3d_label_margin_grid"
+        android:layout_marginEnd="@dimen/video_3d_label_margin_grid"
+        app:srcCompat="@drawable/label_3d"
+        android:visibility="gone"
+        android:contentDescription="@null" />
+
+    <ImageView
+        android:id="@+id/trakt_watched"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignEnd="@id/thumbnail"
+        android:layout_alignTop="@id/thumbnail"
+        app:srcCompat="@drawable/watched_icon_corner"
+        android:visibility="gone"
+        android:contentDescription="@null" />
+
+    <ImageView
+        android:id="@+id/trakt_library"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignStart="@id/thumbnail"
+        android:layout_alignTop="@id/thumbnail"
+        android:layout_marginStart="@dimen/video_trakt_library_margin_left"
+        android:scaleType="fitStart"
+        app:srcCompat="@drawable/label_trakt_library"
+        android:visibility="gone"
+        android:contentDescription="@null" />
+
+    <!-- TV show title -->
+
+    <TextView
+        android:id="@+id/name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dip"
+        android:layout_toEndOf="@id/thumbnail"
+        android:paddingTop="8dip"
+        android:singleLine="true"
+        style="@style/textAppearanceLarge"
+        android:textSize="24sp"
+        android:typeface="sans" />
+
+    <!-- TV show season -->
+
+    <TextView
+        android:id="@+id/number"
+        style="@style/BrowserText.Name.Video"
+        android:layout_below="@id/name"
+        android:layout_marginTop="3dip"
+        android:paddingTop="0dip"
+        android:layout_toEndOf="@id/thumbnail"
+        android:singleLine="true"
+        android:layout_width="match_parent" />
+    <com.archos.mediacenter.video.browser.BrowserByIndexedVideos.ArchosFadeView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:requiresFadingEdge="vertical"
+        android:layout_toEndOf="@+id/thumbnail"
+        android:layout_below="@+id/number"
+        android:layout_above="@+id/view_more"
+        android:id="@+id/scrollView"
+        android:fadingEdgeLength="50dp">
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:textAppearance="?android:attr/textAppearanceMedium"
+            android:id="@+id/plot"
+            android:paddingEnd="5dp"
+
+
+            />
+
+
+
+    </com.archos.mediacenter.video.browser.BrowserByIndexedVideos.ArchosFadeView>
+
+    <TextView
+        android:id="@+id/view_more"
+        style="@style/VideoInfoFileInfo.Title2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:layout_toEndOf="@+id/thumbnail"
+        android:ellipsize="end"
+        android:gravity="end"
+        android:paddingEnd="5dp"
+        android:paddingBottom="5dp"
+        android:text="@string/view_more"
+        android:textAppearance="?android:attr/textAppearanceMedium"
+        android:textSize="@dimen/video_info_small_text" />
+
+    <LinearLayout
+        android:layout_below="@id/thumbnail"
+        android:id="@+id/content_rating_container"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dip"
+        android:layout_marginTop="20dip"
+        android:layout_gravity="center"
+        android:background="@drawable/rounded_edges"
+        >
+
+        <TextView
+            android:id="@+id/content_rating"
+            android:textSize="@dimen/video_info_small_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="5dp"
+            android:layout_marginEnd="5dp"
+            android:layout_marginBottom="1dp"
+            android:gravity="center_horizontal"
+            android:textAppearance="?android:attr/textAppearanceMedium"
+            android:textStyle="bold"
+            android:textColor="@color/grid_item_background"
+            />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/network_container"
+        android:layout_below="@id/content_rating_container"
+        android:layout_width="@dimen/video_details_poster_width"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dip"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="@dimen/video_details_poster_width"
+            android:layout_height="wrap_content"
+            android:textAppearance="?android:attr/textAppearanceMedium"
+            android:id="@+id/network"
+            android:paddingTop="15dp"
+            android:paddingEnd="5dp"
+            android:textSize="@dimen/video_info_small_text"
+            />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/premiered_container"
+        android:layout_below="@id/network_container"
+        android:layout_width="@dimen/video_details_poster_width"
+        android:layout_marginStart="10dip"
+        android:layout_marginBottom="10dip"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="@dimen/video_details_poster_width"
+            android:layout_height="wrap_content"
+            android:textAppearance="?android:attr/textAppearanceMedium"
+            android:id="@+id/premiered"
+            android:paddingTop="15dp"
+            android:paddingEnd="5dp"
+            android:textSize="@dimen/video_info_small_text"
+            />
+    </LinearLayout>
+
+</RelativeLayout>

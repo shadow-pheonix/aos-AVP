@@ -1,0 +1,420 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = 'https://jitpack.io' }
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:9.3.3'
+        //classpath 'app.brant:amazonappstorepublisher:0.1.0'
+        //classpath 'com.github.BrantApps.gradle-amazon-app-store-publisher:amazonappstorepublisher:master-SNAPSHOT'
+    }
+}
+
+plugins {
+    id "com.github.triplet.play" version "4.1.1" apply false
+    id "io.sentry.android.gradle" version "6.19.0" apply false
+    //id "app.brant.amazonappstorepublisher" version "0.1.0"
+}
+
+apply {
+    plugin("com.android.application")
+}
+
+// Only apply play plugin when publish tasks are requested
+def shouldApplyPlayPlugin = gradle.startParameter.taskNames.any { it.toLowerCase().contains("publish") }
+if (shouldApplyPlayPlugin) {
+    apply plugin: 'com.github.triplet.play'
+}
+
+import io.sentry.android.gradle.extensions.InstrumentationFeature
+
+if (hasProperty('bugReport')) {
+    apply plugin: 'io.sentry.android.gradle'
+    sentry {
+        tracingInstrumentation {
+            enabled = true
+            features = EnumSet.allOf(InstrumentationFeature) - InstrumentationFeature.OKHTTP
+        }
+    }
+}
+
+def keystorePropertiesFile = rootProject.file("keystore.properties");
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+
+def sentryPropertiesFile = rootProject.file("sentry.properties");
+def sentryProperties = new Properties()
+if (sentryPropertiesFile.exists()) sentryProperties.load(new FileInputStream(sentryPropertiesFile))
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+        maven { url = 'https://jitpack.io' }
+    }
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile).tap {
+            configureEach {
+                options.compilerArgs << "-Xlint:unchecked" << "-Xlint:deprecation" << "-Xmaxwarns" << "10000"
+            }
+        }
+        // check tasks to add via ./gradlew tasks --all | grep DuplicateClasses
+    }
+}
+
+static def getDate() {
+    // we increment version number every 1000 seconds,
+    // we started on 31/08/2016, and introduced splits on 06/02/2020
+    // update 2022/11/25 to reset getDate offset (- 88364898L)
+    def date = new Date().getTime() / 1000L - 1472637600L - 108380000L - 88364898L;
+    return (int) (date / 1000L)
+}
+
+static def getFormattedDate() {
+    def date = new Date()
+    def formattedDate = date.format('yyyyMMdd.HHmm')
+    return formattedDate
+}
+
+if (shouldApplyPlayPlugin) {
+    play {
+        serviceAccountCredentials.set(file("nova.json"))
+        track.set("internal")  // rollout, beta, alpha, release, internal
+        //userFraction.set(0.1) // rollout rate in %/100
+        releaseStatus.set(com.github.triplet.gradle.androidpublisher.ReleaseStatus.COMPLETED)
+    }
+}
+
+//amazon {
+//    securityProfile = file("nova-amazon.json")
+//    applicationId = "amzn1.devportal.mobileapp.c59461247b6a4806b4f30cd80076133e"
+//    pathToApks = [ file("build/outputs/apk/amazon/release/Video-amazon-universal-API_21+-release.apk") ]
+//    replaceEdit = true
+//    replaceApks = true
+//}
+
+android {
+    namespace = 'com.archos.mediacenter.video'
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties['storeFile'])
+                storePassword = keystoreProperties['storePassword']
+                keyAlias = keystoreProperties['keyAlias']
+                keyPassword = keystoreProperties['keyPassword']
+            }
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+        debug {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties['storeFile'])
+                storePassword = keystoreProperties['storePassword']
+                keyAlias = keystoreProperties['keyAlias']
+                keyPassword = keystoreProperties['keyPassword']
+            }
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+    }
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    compileOptions {
+        // needed for old Android versions when using java 17
+        coreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+        renderScript = false
+        resValues = true
+    }
+    compileSdk = 37
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            resources.srcDirs = ['src/main/java']
+            aidl.srcDirs = ['src/main/java']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['assets']
+        }
+        test {
+            java.srcDirs = ['src/test/java']
+            resources.srcDirs = ['src/test/resources']
+        }
+    }
+    defaultConfig {
+        applicationId = "org.courville.nova"
+        generatedDensities = []
+        minSdkVersion 23
+        targetSdkVersion 36
+        multiDexEnabled = true
+        // below version tracks the one from F-Droid or universal package when generated with ./gradlew -Puniversal
+        // this is overridden when using split apk and normal split apk generation or oneapk amazon generation
+        // amazon apk is generated with ./gradlew -Poneapk
+        versionCode = 6050004
+        versionName = '6.5.4'
+        def novaVersionName = versionName
+        if (! project.hasProperty("universal")) {
+            // override versionName and versionCode to get it dependent on the date
+            versionName = versionName + "-" + getFormattedDate()
+            // 2549909 is 20221124 last Google play release to reset counter
+            versionCode = 2549909 + getDate()
+        }
+        //archivesBaseName = "" + applicationId + "-" + versionCode + "-" + versionName
+        project.extensions.getByType(BasePluginExtension).archivesName.set(applicationId + "-" + versionCode + "-" + versionName)
+        def archivesNameValue = project.extensions.getByType(BasePluginExtension).archivesName.get()
+        println("defaultConfig archivesBaseName : " + archivesNameValue)
+        println("defaultConfig versionName : " + versionName)
+        println("defaultConfig versionCode : " + versionCode)
+        if (keystorePropertiesFile.exists()) signingConfig = signingConfigs.release
+        if (project.hasProperty("sponsor")) {
+            buildConfigField "boolean", "ENABLE_SPONSOR", "true"
+        } else {
+            buildConfigField "boolean", "ENABLE_SPONSOR", "false"
+        }
+        if (project.hasProperty("adultScrape")) {
+            buildConfigField "boolean", "ADULT_SCRAPE", "true"
+        } else {
+            buildConfigField "boolean", "ADULT_SCRAPE", "false"
+        }
+        if (sentryPropertiesFile.exists()) {
+            if (project.hasProperty("bugReport")) {
+                buildConfigField "boolean", "ENABLE_BUG_REPORT", "true"
+                buildConfigField "String", "SENTRY_DSN", "\"${sentryProperties['dsn']}\"";
+            } else {
+                buildConfigField "boolean", "ENABLE_BUG_REPORT", "false"
+                buildConfigField "String", "SENTRY_DSN", "\"\"";
+            }
+        } else {
+            buildConfigField "boolean", "ENABLE_BUG_REPORT", "false"
+            buildConfigField "String", "SENTRY_DSN", "\"\"";
+        }
+        resValue "string", "VERSION_NAME", versionName
+        resValue "string", "APP_INFO", "Nova v" + versionName + " (" + applicationId + ")"
+    }
+    bundle {
+        language {
+            enableSplit = false
+        }
+        density {
+            enableSplit = true
+        }
+        abi {
+            enableSplit = true
+        }
+    }
+    splits {
+        abi {
+            enable = true
+            reset()
+            include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            if (project.hasProperty("universal")) {
+                // universal if for fdroid now with specific version(Name|Code) and oneapk for amazon
+                enable = false
+                universalApk = true
+            } else if (project.hasProperty("oneapk")) {
+                // universal if for fdroid now with specific version(Name|Code) and oneapk for amazon
+                enable = true
+                universalApk = true
+            } else {
+                // disable splits for bundle builds, enable for APK builds
+                enable = !gradle.startParameter.taskNames.any { it.toLowerCase(Locale.ROOT).contains("bundle") }
+                universalApk = false
+            }
+        }
+    }
+    flavorDimensions "amazon"
+    productFlavors {
+        amazon {
+            dimension "amazon"
+        }
+        noamazon {
+            dimension "amazon"
+        }
+        manageexternalstorage {
+            dimension "amazon"
+        }
+    }
+    aaptOptions {
+        additionalParameters '--no-version-vectors'
+    }
+    buildTypes {
+        println("buildTypes archivesBaseName : " + archivesNameValue)
+        release {
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-project.txt'
+        }
+    }
+    packagingOptions {
+        jniLibs {
+            excludes += ['META-INF/services/**',
+                         'com/**',
+                         'jcifs2/**',
+                         'kotlin/**',
+                         'okhttp3/**',
+                         'org/**',
+                         "**/libc++_shared.so"
+                        ]
+                         
+            pickFirsts += ['lib/x86/libnvpnativehelper.so',
+                           'lib/x86_64/libnvpnativehelper.so',
+                           'lib/armeabi-v7a/libnvpnativehelper.so',
+                           'lib/arm64-v8a/libnvpnativehelper.so',
+                           ]
+        }
+        resources {
+            excludes += ['META-INF/*.kotlin_module',
+                         'META-INF/*.version',
+                         'META-INF/DEPENDENCIES',
+                         'META-INF/LICENSE',
+                         'META-INF/NOTICE',
+                         'META-INF/LICENSE.txt',
+                         'META-INF/LICENSE.md',
+                         'META-INF/NOTICE.txt',
+                         'META-INF/NOTICE.md',
+                         'META-INF/beans.xml',
+                         'META-INF/maven',
+                         'META-INF/services/**',
+                         'README',
+                         'com/**',
+                         'jcifs2/**',
+                         'kotlin/**',
+                         'okhttp3/**',
+                         'org/**',
+                         '**/*.txt',
+                         '**/*.xml',
+                         'META-INF/versions/9/OSGI-INF/MANIFEST.MF',
+                         'META-INF/versions/15/OSGI-INF/MANIFEST.MF',
+                         'META-INF/versions/11/OSGI-INF/MANIFEST.MF']
+        }
+    }
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = false
+        showAll = true
+        lintConfig = file("lint.xml")
+        disable 'MissingTranslation', 'ExtraTranslation', 'MissingQuantity', 'ImpliedQuantity'
+        enable 'SuspiciousIndentation'
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+        unitTests.all {
+            testLogging {
+                events "passed", "skipped", "failed", "standardOut", "standardError"
+                outputs.upToDateWhen {false}
+                showStandardStreams = true
+            }
+        }
+    }
+
+
+    dependenciesInfo {
+        if (project.hasProperty("universal")) {
+            // universal if for fdroid now with specific version(Name|Code) and oneapk for amazon
+            includeInApk = false
+            includeInBundle = false
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.forEach { output ->
+            String currentName = output.outputFileName.get()
+            String newName = currentName
+            if (project.hasProperty("universal")) {
+                newName = newName.replace("-release", "-universal-release")
+            }
+            newName = newName.replace("-noamazon-", "-").replace("-manageexternalstorage-", "-")
+            output.outputFileName.set(newName)
+        }
+        List<String> outputInfo = []
+        variant.outputs.forEach { output ->
+            outputInfo.add("generated: " + output.outputFileName.get() + " (" + output.versionName.orNull + ", " + output.versionCode.orNull + ")")
+        }
+        String variantName = variant.name.capitalize()
+        project.tasks.configureEach { task ->
+            if (task.name == "assemble${variantName}") {
+                task.dependsOn("lint${variantName}")
+                task.doLast {
+                    outputInfo.each { println(it) }
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation project(':FileCoreLibrary')
+    implementation project(':MediaLib')
+    implementation 'androidx.lifecycle:lifecycle-process:2.11.0'
+    // needed for old Android versions when using java 17
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    //debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.14'
+    implementation 'com.jakewharton.threetenabp:threetenabp:1.4.9'
+    implementation 'com.squareup.picasso:picasso:2.8'
+    implementation 'androidx.tvprovider:tvprovider:1.1.0'
+    implementation 'androidx.media:media:1.8.0'
+    implementation 'androidx.core:core:1.19.1'
+    implementation 'androidx.legacy:legacy-support-core-utils:1.0.0'
+    implementation 'androidx.legacy:legacy-support-core-ui:1.0.0'
+    implementation 'androidx.fragment:fragment:1.9.1'
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'androidx.palette:palette:1.0.0'
+    implementation 'androidx.appcompat:appcompat:1.8.0'
+    // Uses the installed browser for OAuth without embedding a browser engine.
+    implementation 'androidx.browser:browser:1.10.0'
+    implementation 'androidx.preference:preference:1.2.1'
+    implementation ('com.github.ksoichiro:android-observablescrollview:1.6.0') {
+        exclude group: 'com.android.support', module: 'recyclerview-v7'
+        exclude group: 'com.android.support', module: 'support-v4'
+    }
+    implementation 'com.google.android.material:material:1.14.0'
+    implementation 'androidx.leanback:leanback:1.2.0'
+    implementation 'androidx.leanback:leanback-preference:1.2.0'
+    implementation 'androidx.tvprovider:tvprovider:1.1.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:5.5.0'
+    implementation 'com.github.tony19:logback-android:3.0.0'
+    implementation 'io.sentry:sentry-android:8.58.0'
+    implementation 'io.sentry:sentry:8.58.0'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:5.24.0'
+    testImplementation 'org.robolectric:robolectric:4.17'
+    testImplementation 'androidx.test:core:1.7.0'
+    testImplementation 'org.slf4j:slf4j-api:2.0.20'
+    testImplementation 'ch.qos.logback:logback-classic:1.6.4'
+}
+
+configurations { // try to exclude device specific libraries interfering
+    configureEach {
+        exclude group: 'jcifs', module: 'jcifs' // try to avoid conflict with jcifs-ng on Konka Android TV 2861
+        // xpp3 and stax ship classes (XmlPullParser, javax.xml.namespace.*) already in the Android SDK;
+        // including them causes R8 9.x to crash with a class-hierarchy invariant violation
+        exclude group: 'xpp3', module: 'xpp3'
+        exclude group: 'stax', module: 'stax-api'
+        exclude group: 'stax', module: 'stax'
+    }
+}
+
+// to avoid duplicate classes
+configurations.implementation {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
+
+configurations.matching { it.name.toLowerCase().contains("unittest") }.configureEach {
+    exclude group: 'com.github.tony19', module: 'logback-android'
+}

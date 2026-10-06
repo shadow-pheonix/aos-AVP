@@ -1,0 +1,44 @@
+Nova ist ein opeN sOurce Video plAyer für Tablets, Telefone und AndroidTV-Geräte, verfügbar unter https://github.com/nova-video-player/aos-AVP
+
+Universeller Player:  
+- Videos von Ihrem Computer, Server (FTP, SFTP, WebDAV), NAS (SMB, UPnP) abspielen
+- Wiedergabe von Videos von einem externen USB-Speicher 
+- Videos aus allen Quellen integriert in einer einheitlichen Multimedia-Sammlung
+Automatischer Online-Abruf von Film- und TV-Sendungsbeschreibungen mit Postern und Hintergrundkulissen
+- Integrierter Untertitel-Download
+
+Bester Player:
+- Hardwarebeschleunigte Videodecodierung für die meisten Geräte und Videoformate
+- Unterstützung von Multi-Audiospuren und Multi-Untertiteln
+- Unterstützte Dateiformate: MKV, MP4, AVI, WMV, FLV etc.
+- Unterstützte Untertitel-Dateitypen: SRT, SUB, ASS, SMI etc.
+
+TV freundlich:
+- Dedizierte "Leanback"-Benutzeroberfläche für Android TV
+- AC3 / DTS-Passthrough (HDMI oder S / PDIF) auf unterstützter Hardware: Nexus Player, NVidia SHIELD TV, Rockchip und AmLogic-basierte TV-Boxen
+- 3D-Unterstützung mit Side-by-Side- und Top-Bottom-Format-Wiedergabe für 3D-TVs
+- Audio-Boost-Modus zur Erhöhung der Lautstärke
+- Nachtmodus zur dynamischen Anpassung der Lautstärke
+
+Browsen Sie, wie Sie möchten:
+- Sofortiger Zugriff auf kürzlich hinzugefügte und kürzlich abgespielte Videos
+- Durchsuchen Sie Filme nach Name, Genre, Jahr, Dauer, Bewertung
+- Durchsuchen Sie TV-Sendungen nach Staffeln
+- Ordner-Browsing unterstützt
+
+Und noch mehr: 
+- Wiederaufnahme von Netzwerk-Video mit mehreren Geräten
+- NFO-Metadatenverarbeitung für Beschreibungen und Poster
+- Geplanter Rescan Ihres Netzwerkinhalts (nur Leanback-UI)
+- Privater Modus: Temporäre Deaktivierung der Aufzeichnung der Wiedergabehistorie
+- Manuelles Anpassen der Untertitelsynchronisation
+- Manuelles Anpassen der Audio-/Videosynchronisation
+- Track your video collection and what you have watched via Trakt
+
+Falls Sie ein Problem oder eine Anfrage zu dieser App haben, besuchen Sie bitte unsere Reddit-Support-Community unter dieser Adresse: https://www.reddit.com/r/NovaVideoPlayer
+
+Wenn Sie irgendein Problem mit der Hardware-Decodierung von Videos bemerken, können Sie die Software-Decodierung in den Einstellungen erzwingen.
+
+Sie sind herzlich eingeladen, an der Übersetzung der Applikation mitzuwirken unter: https://crowdin.com/project/nova-video-player
+
+NOVA steht für opeN sOurce Video plAyer.

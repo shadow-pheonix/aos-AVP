@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+This layout defines items of the browser list.
+There is a thumbnail, a first line for the name, and a second line
+for informations (duration for files, number of files for directories).
+-->
+
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="fill_parent"
+    android:layout_height="@dimen/video_details_item_height"
+    android:background="@drawable/list_item_background"
+    android:descendantFocusability="blocksDescendants"
+    android:gravity="center_vertical" >
+
+    <RelativeLayout
+        android:id="@+id/left_area"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentStart="true"
+        android:layout_alignParentTop="true"
+        android:layout_marginTop="2dip"
+        android:layout_marginEnd="@dimen/content_list_space_between_thumbnail_and_name" >
+
+        <!-- Poster on the left side -->
+
+        <ImageView
+            android:id="@+id/thumbnail"
+            android:layout_width="@dimen/video_details_poster_width"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/video_details_poster_margin_bottom"
+            android:layout_marginStart="@dimen/video_details_poster_margin_left"
+            android:layout_marginEnd="0dip"
+            android:clipToOutline="true"
+            tools:ignore="UnusedAttribute"
+            android:background="@drawable/rounded_rectangle"
+            android:scaleType="center"
+        android:contentDescription="@null" />
+
+        <ImageView
+            android:id="@+id/flag_3d"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignBottom="@id/thumbnail"
+            android:layout_alignEnd="@id/thumbnail"
+            android:layout_marginBottom="@dimen/video_3d_label_margin_grid"
+            android:layout_marginEnd="@dimen/video_3d_label_margin_grid"
+            app:srcCompat="@drawable/label_3d"
+            android:visibility="gone"
+        android:contentDescription="@null" />
+
+        <ImageView
+            android:id="@+id/trakt_watched"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignEnd="@id/thumbnail"
+            android:layout_alignTop="@id/thumbnail"
+            android:layout_marginEnd="-2px"
+            android:layout_marginTop="-2px"
+            app:srcCompat="@drawable/watched_icon_corner"
+            android:visibility="gone"
+        android:contentDescription="@null" />
+
+        <ImageView
+            android:id="@+id/trakt_library"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignStart="@id/thumbnail"
+            android:layout_alignTop="@id/thumbnail"
+            android:layout_marginStart="@dimen/video_list_show_trakt_library_margin_left"
+            app:srcCompat="@drawable/label_trakt_library_small"
+            android:visibility="gone"
+        android:contentDescription="@null" />
+    </RelativeLayout>
+
+    <include layout="@layout/browser_item_details_common" />
+
+</RelativeLayout>

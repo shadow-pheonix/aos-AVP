@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="fill_parent"
+    android:focusable="true"
+    android:layout_marginTop="5dip"
+    android:background="@drawable/recycler_item_background"
+    android:layout_height="wrap_content"
+    android:descendantFocusability="blocksDescendants"
+    android:gravity="center_vertical" >
+
+    <RelativeLayout
+        android:id="@+id/left_area"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentStart="true"
+        android:layout_centerVertical="true">
+
+        <!-- Left area = thumbnail/poster -->
+
+        <ImageView
+            android:id="@+id/icon"
+            android:layout_width="70dip"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/video_list_thumbnail_margin_bottom"
+            android:layout_marginStart="@dimen/video_list_thumbnail_margin_left"
+
+            android:layout_marginTop="@dimen/video_list_thumbnail_margin_top"
+            app:srcCompat="@drawable/filetype_video_folder_indexed"
+        android:contentDescription="@null" />
+
+    </RelativeLayout>
+
+    <!--
+    (i) symbol.
+    NOTE: Active area larger than the icon itself due to different left and right padding
+-->
+
+    <ImageButton
+        android:id="@+id/refresh"
+        android:layout_width="wrap_content"
+        android:layout_height="@dimen/video_list_thumbnail_height"
+        android:layout_alignParentBottom="false"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentTop="false"
+        android:layout_centerVertical="true"
+        android:paddingStart="10dip"
+        android:paddingEnd="10dip"
+        android:background="@drawable/list_selector_holo_dark"
+        app:srcCompat="@drawable/label_refresh"
+        android:contentDescription="@string/refresh" />
+
+    <!--
+         Bottom area = progressbar + info icons
+         NOTE: negative right margin to be close to the (i) icon despite it's large left padding (see above)
+    -->
+
+    <!--
+         Middle area = text info
+         NOTE: negative right margin to be go over the (i) icon despite it's large left padding
+    -->
+    <RelativeLayout
+        android:paddingStart="@dimen/content_list_space_between_thumbnail_and_name"
+        android:layout_width="fill_parent"
+        android:layout_toEndOf="@id/left_area"
+        android:layout_toStartOf="@id/refresh"
+        android:layout_height="wrap_content"
+        android:descendantFocusability="blocksDescendants"
+        android:gravity="center_vertical" >
+    <TextView
+        android:id="@+id/name"
+        style="@style/BrowserText.Name.Video"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentStart="true"
+        android:layout_alignWithParentIfMissing="true"
+        android:singleLine="false"
+        android:layout_marginEnd="-30dip"
+        tools:text="this is"
+        android:layout_toStartOf="@id/expanded"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/second"
+        style="@style/BrowserText.Info.Video"
+        android:layout_alignWithParentIfMissing="true"
+        android:singleLine="false"
+        android:maxLines="3"
+        tools:text="this is a pretty long text just for testinf purposes"
+        android:layout_below="@id/name"
+        android:layout_marginEnd="3dp"
+
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+    </RelativeLayout>
+</RelativeLayout>

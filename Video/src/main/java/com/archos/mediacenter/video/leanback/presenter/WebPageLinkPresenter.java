@@ -1,0 +1,205 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.leanback.presenter;
+
+import android.annotation.SuppressLint;
+import androidx.annotation.RequiresApi;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.net.Uri;
+import androidx.core.content.ContextCompat;
+import androidx.leanback.widget.BaseCardView;
+import androidx.leanback.widget.Presenter;
+
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.leanback.adapter.object.WebPageLink;
+
+
+/**
+ * Created by vapillon on 10/04/15.
+ */
+public class WebPageLinkPresenter extends Presenter {
+
+    private static final String TAG = "WebPageLinkPresenter";
+    private static final boolean DBG = false;
+
+    public class WebPageLinkViewHolder extends ViewHolder {
+        BaseCardView mCard;
+        View mPlaceholder;
+        WebView mWebView;
+        View mProgress;
+        WebViewDelayedInitTask mWebViewDelayedInitTask;
+        String mUrl = null;
+
+        public WebPageLinkViewHolder(ViewGroup parent) {
+            super(new BaseCardView(parent.getContext()));
+            mCard = (BaseCardView)view;
+            mCard.setFocusable(true);
+            mCard.setFocusableInTouchMode(true);
+
+            Context c = parent.getContext();
+            mPlaceholder = new View(c);
+            mPlaceholder.setBackgroundColor(ContextCompat.getColor(c, R.color.lb_basic_card_bg_color));
+            BaseCardView.LayoutParams lp = new BaseCardView.LayoutParams(
+                    c.getResources().getDimensionPixelSize(R.dimen.details_weblink_width),
+                    c.getResources().getDimensionPixelSize(R.dimen.details_weblink_height));
+            lp.viewType = BaseCardView.LayoutParams.VIEW_TYPE_MAIN;
+            mCard.addView(mPlaceholder, lp);
+
+            if(DBG) Log.d(TAG, "Launching delayed creation of webview in " + mCard + " for " + this);
+            mWebViewDelayedInitTask = new WebViewDelayedInitTask(mCard, mPlaceholder);
+            mWebViewDelayedInitTask.execute();
+        }
+
+        void setUrl(String url) {
+            mUrl = url;
+            // Load in webview if it is already ready
+            if (mWebView!=null) {
+                mWebView.loadUrl(mUrl);
+            }
+            // Relaunch webview init if not on-going (it means it has been interrupted before finishing after ViewHolder creation)
+            else if (mWebViewDelayedInitTask==null) {
+                mWebViewDelayedInitTask = new WebViewDelayedInitTask(mCard, mPlaceholder);
+                mWebViewDelayedInitTask.execute();
+            }
+        }
+
+        public void stopLoading() {
+            if (mWebView!=null)
+                mWebView.stopLoading();
+        }
+
+        void abortWebviewInit() {
+            if (mWebViewDelayedInitTask!=null) {
+                if(DBG) Log.d(TAG, "Canceling delayed init for WebView " + this);
+                mWebViewDelayedInitTask.cancel();
+                mWebViewDelayedInitTask = null; // way to remember it is over
+            }
+        }
+
+        @SuppressLint("SetJavaScriptEnabled")
+        private void initWebView() {
+            mWebView.setFocusable(false);
+            mWebView.setInitialScale(80);
+            mWebView.getSettings().setJavaScriptEnabled(true);
+            mWebView.setWebViewClient(new WebViewClient() {
+                // this one is for Android API 24+
+                @RequiresApi(Build.VERSION_CODES.N)
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    final String url = request.getUrl().toString();
+                    if(DBG) Log.d(TAG, "shouldOverrideUrlLoading " + url);
+                    //view.loadUrl(url);
+                    return false;
+                }
+                // this one is for Android API 21-23
+                @SuppressWarnings("deprecation")
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                    if(DBG) Log.d(TAG, "shouldOverrideUrlLoading " + url);
+                    //view.loadUrl(url);
+                    return false;
+                }
+
+                @Override
+                public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                    super.onPageStarted(view, url, favicon);
+                    mProgress.setVisibility(View.VISIBLE);
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    super.onPageFinished(view, url);
+                    mProgress.setVisibility(View.GONE);
+                }
+            });
+            // Remove 'Mobile' from the user agent to avoid phone-version of IMDB on TV screen...
+            String userAgent = mWebView.getSettings().getUserAgentString();
+            userAgent = userAgent.replace("Mobile", " ");
+            mWebView.getSettings().setUserAgentString(userAgent);
+        }
+
+        // The delay is pure main-thread scheduling; no background thread needed
+        class WebViewDelayedInitTask {
+            private final ViewGroup mParent;
+            private final View mPlaceholder;
+            private final Handler mHandler = new Handler(Looper.getMainLooper());
+            private final Runnable mInitRunnable;
+
+            public WebViewDelayedInitTask(ViewGroup parent, View placeholder) {
+                mParent = parent;
+                mPlaceholder = placeholder;
+                mInitRunnable = () -> {
+                    if(DBG) Log.d(TAG, "starting creation of WebView in " + mParent);
+                    Context c = mParent.getContext();
+                    View content = LayoutInflater.from(c).inflate(R.layout.leanback_weblink_cardview_content, mParent, false);
+                    mProgress = content.findViewById(R.id.progress);
+                    mWebView = (WebView) content.findViewById(R.id.webview);
+                    initWebView();
+                    mParent.removeView(mPlaceholder);
+                    mParent.addView(content);
+                    if (mUrl != null) {
+                        mWebView.loadUrl(mUrl);
+                    }
+                    mWebViewDelayedInitTask = null; // way to remember it is over
+                };
+            }
+
+            public void execute() {
+                mHandler.postDelayed(mInitRunnable, 500);
+            }
+
+            public void cancel() {
+                if(DBG) Log.d(TAG, "Canceling delayed init for WebView " + this);
+                mHandler.removeCallbacks(mInitRunnable);
+            }
+        }
+
+
+    }
+
+    @Override
+    public WebPageLinkViewHolder onCreateViewHolder(ViewGroup parent) {
+        return new WebPageLinkViewHolder(parent);
+    }
+
+    @Override
+    public void onBindViewHolder(ViewHolder viewHolder, Object item) {
+        final WebPageLinkViewHolder vh = (WebPageLinkViewHolder)viewHolder;
+        final WebPageLink link = (WebPageLink)item;
+        if(DBG) Log.d(TAG, "onBindViewHolder "+viewHolder+" "+link.getUrl());
+        vh.setUrl(link.getUrl());
+    }
+
+    @Override
+    public void onUnbindViewHolder(ViewHolder viewHolder) {
+        WebPageLinkViewHolder vh = (WebPageLinkViewHolder)viewHolder;
+        if(DBG) Log.d(TAG, "onBindViewHolder "+viewHolder);
+        vh.stopLoading();
+        vh.setUrl("about:blank");
+        vh.abortWebviewInit();
+    }
+}

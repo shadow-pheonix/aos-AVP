@@ -1,0 +1,44 @@
+Nova to opeN sOurcowy Video odtwArzacz zaprojektowany dla tabletów, telefonów i urządzeń AndroidTV dostępna pod adresem https://github.com/nova-video-player/aos-AVP
+
+Uniwersalny odtwarzacz:  
+- Odtwarza filmy z komputera, serwera (FTP, SFTP, WebDAV), NAS (SMB, UPnP)
+- Odtwarza filmy z zewnętrznej pamięci USB 
+- Prezentuje filmy ze wszystkich źródeł w jednolitej bibliotece multimediów
+- Automatycznie pobiera z sieci opisy filmów i seriali, z plakatami oraz tapetami
+- Wyszukuje napisy
+
+Najlepszy odtwarzacz:
+- Dekodowanie z akceleracją sprzętową na większości urządzeń i dla większości formatów wideo
+- Obsługa wielu ścieżek dźwięku i napisów
+- Obsługa formatów plików: MKV, MP4, AVI, WMV, FLV, itp.
+- Obsługa plików z napisami typu: SRT, SUB, ASS, SMI itp.
+
+Działa na telewizorach:
+- Interfejs użytkownika zgodny z "leanback for Android TV"
+- Przekazywanie AC3 / DTS (HDMI lub S / PDIF) na obsługiwanym sprzęcie: Nexus Player, NVidia SHIELD TV, Rockchip i AmLogic TV-box < 0>- Obsługa 3D z odtwarzaniem formatów side-by-side i top-bottom dla telewizo
+- Zgodność z poziomymi i pionowymi formatami transmisji dla telewizorów 3D
+- Tryb wzmocnienia poziomu dźwięku
+- Tryb nocny dynamicznego dostosowania głośności
+
+Przeglądaj jak chcesz:
+- Szybki dostęp do ostatnio dodanych i odtwarzanych filmów
+- Przeglądanie według nazwy, gatunku, roku, czasu trwania, oceny
+- Przeglądanie seriali według sezonów
+- Możliwość przeglądania folderów
+
+I jeszcze więcej: 
+- Wznawianie odtwarzania z wielu urządzeń w sieci
+- Przetwarzanie metadanych NFO z opisami i plakatami
+- Planowanie skanowania treści sieciowych (tylko w telewizorach)
+- Tymczasowe wyłączenie historii odtwarzania w trybie prywatnym
+- Ręczna regulacja synchronizacji napisów
+- Ręczna regulacja synchronizacji audio/wideo
+- Organizuj kolekcję wideo i śledź historię obejrzanych tytułów w usłudze Trakt
+
+W przypadku problemów lub zapytań dotyczących tej aplikacji odwiedź stronę grupy wsparcia na Reddit pod adresem: https://www.reddit.com/r/NovaVideoPlayer
+
+Jeśli wystąpią problemy z dekodowaniem sprzętowym wideo, możesz wymusić dekodowanie programowe w preferencjach aplikacji.
+
+Zapraszamy do udziału w tłumaczeniu aplikacji na https://crowdin.com/project/nova-video-player
+
+NOVA jest akronimem od opeN sOurce Video plAyer.

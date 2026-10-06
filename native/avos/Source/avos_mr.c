@@ -1,0 +1,450 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "stream_fd.h"
+#include <stdio.h>
+#include <inttypes.h>
+#include <libavutil/time.h>
+#include <libswscale/swscale.h>
+#include <limits.h>
+
+#include "avos_common.h"
+#include "avos_common_priv.h"
+#include "avos_mr.h"
+#include "avos_mr_metadata.h"
+#include "astdlib.h"
+#include "debug.h"
+#include "global.h"
+#include "file_type.h"
+#include "file_info.h"
+#include "thumb.h"
+#include "thumb_stream.h"
+#include "athread.h"
+#include "stream_config.h"
+
+#define DBG DBG_IF(Debug[DBG_VIDEO_PLAYER] || Debug[DBG_AUDIO_PLAYER])
+#define DBG2 DBG_IF((Debug[DBG_VIDEO_PLAYER] > 1) || (Debug[DBG_AUDIO_PLAYER] > 1))
+
+#define MRLOG(fmt, ...) serprintf("%p|%s: " fmt "\n", mr, __FUNCTION__, ##__VA_ARGS__)
+#define MRLOGV DBG MRLOG
+
+struct avos_mr {
+	int cancelled;
+	int64_t deadline_us;
+	int fd;
+	STREAM_URL src;
+	int type;
+	int etype;
+	const char *mimetype;
+
+	FILE_INFO		info;
+	APIC			apic;
+	int			info_valid;
+	thumb_stream_t		*thumb_stream;
+
+	metadata_buffer_t *metadata_buffer;
+};
+
+static void avos_mr_cancel(avos_mr_t *mr)
+{
+	__atomic_store_n(&mr->cancelled, 1, __ATOMIC_RELEASE);
+}
+
+static int avos_mr_aborted(void *opaque)
+{
+	avos_mr_t *mr = opaque;
+	return __atomic_load_n(&mr->cancelled, __ATOMIC_ACQUIRE) ||
+		av_gettime_relative() >= mr->deadline_us;
+}
+
+static void avos_mr_begin(avos_mr_t *mr)
+{
+	mr->deadline_us = av_gettime_relative() + 30000000;
+}
+
+static avos_mr_t *avos_mr_create()
+{
+	avos_mr_t *mr = acalloc(1, sizeof(avos_mr_t));
+	if (!mr)
+		return NULL;
+	mr->fd = -1;
+	mr->metadata_buffer = avos_metadata_create();
+	if (!mr->metadata_buffer) { afree(mr); return NULL; }
+	MRLOGV();
+	return mr;
+}
+
+static int avos_mr_destroy(avos_mr_t *mr)
+{
+	MRLOGV();
+
+	if (mr->metadata_buffer)
+		avos_metadata_destroy(&mr->metadata_buffer);
+	if (mr->thumb_stream)
+		thumb_stream_destroy(mr->thumb_stream);
+	if (mr->apic.buffer)
+		free(mr->apic.buffer);
+	if (mr->fd != -1)
+		close(mr->fd);
+	stream_url_clear(&mr->src);
+	afree(mr);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mr_setdatasource_common(avos_mr_t *mr)
+{
+	free(mr->apic.buffer);
+	memset(&mr->info, 0, sizeof(FILE_INFO));
+	memset(&mr->apic, 0, sizeof(APIC));
+	mr->info_valid = 0;
+	if (mr->thumb_stream) {
+		thumb_stream_destroy(mr->thumb_stream);
+		mr->thumb_stream = NULL;
+	}
+	mr->apic.buffer_size = APIC_MAX_SIZE;
+	get_url_type_and_mime(&mr->src, &mr->type, &mr->etype, &mr->mimetype);
+
+	MRLOG("file type: %s", mr->type == TYPE_VID ? "video" : mr->type == TYPE_AUD ? "audio" : "unknown");
+	return mr->type == TYPE_NONE ? AVOS_ERR : AVOS_ERR_OK;
+}
+
+static int avos_mr_setdatasource(avos_mr_t *mr, const char *path, const char **keys, const char **values)
+{
+	MRLOGV("%s", path);
+	if (stream_url_cpy_url_name_headers(&mr->src, path, NULL, keys, values))
+		return AVOS_ERR;
+	if (mr->fd >= 0) { close(mr->fd); mr->fd = -1; }
+	return avos_mr_setdatasource_common(mr);
+}
+
+static int avos_mr_setdatasource_fd(avos_mr_t *mr, int fd, int64_t offset, int64_t length)
+{
+	int owned_fd = stream_fd_duplicate(fd, offset, &length);
+	if (owned_fd < 0) return AVOS_ERR;
+	char fd_url[128];
+	snprintf(fd_url, sizeof(fd_url), "fd://%d:%"PRId64":%"PRId64, owned_fd, offset, length);
+	if (stream_url_cpy_url(&mr->src, fd_url)) {
+		close(owned_fd);
+		return AVOS_ERR;
+	}
+	if (mr->fd >= 0) close(mr->fd);
+	mr->fd = owned_fd;
+	return avos_mr_setdatasource_common(mr);
+}
+
+static int avos_mr_fillmetadata(avos_mr_t *mr)
+{
+#define ADD_STR(_id, _str) do { \
+	if (avos_metadata_append_str(buffer, (_id), (_str)) == -1) \
+		goto quit; \
+} while(0)
+#define ADD_INT(_id, _arg) do { \
+	sprintf(int_buffer, "%d", (_arg)); \
+	if (avos_metadata_append_str(buffer, (_id), int_buffer) == -1) \
+		goto quit; \
+} while(0)
+#define ADD_INT64(_id, _arg) do { \
+	sprintf(int_buffer, "%"PRId64, (_arg)); \
+	if (avos_metadata_append_str(buffer, (_id), int_buffer) == -1) \
+		goto quit; \
+} while(0)
+
+	const char *token;
+	char int_buffer[64];
+	int i, gap_key;
+	int duration = mr->info.duration;
+	metadata_buffer_t *buffer = mr->metadata_buffer;
+	ID3_TAG *id3_tag = &mr->info.id3_tag;
+	AV_PROPERTIES *av = &mr->info.av;
+	AUDIO_PROPERTIES *audiop = &av->audio[0];
+	VIDEO_PROPERTIES *videop = &av->video[0];
+
+	if ((mr->type != TYPE_AUD && mr->type != TYPE_VID && mr->type != TYPE_LST) || !buffer)
+		return AVOS_ERR;
+
+	MRLOGV();
+
+	avos_metadata_write_begin(buffer);
+
+	if (mr->info.size > 0)
+		ADD_INT64(AVOS_MR_METADATA_FILE_SIZE, mr->info.size);
+
+	if (id3_tag && id3_tag->valid ) {
+		ADD_INT(AVOS_MR_METADATA_CD_TRACK_NUMBER, id3_tag->track);
+		ADD_INT(AVOS_MR_METADATA_DISC_NUMBER, id3_tag->discnumber);
+		ADD_STR(AVOS_MR_METADATA_ALBUM, id3_tag->album);
+		ADD_STR(AVOS_MR_METADATA_ARTIST,id3_tag->artist);
+		ADD_STR(AVOS_MR_METADATA_ALBUMARTIST, id3_tag->album_artist);
+		ADD_STR(AVOS_MR_METADATA_COMPOSER, id3_tag->composer);
+		ADD_STR(AVOS_MR_METADATA_AUTHOR, id3_tag->author);
+		ADD_STR(AVOS_MR_METADATA_WRITER, id3_tag->writer);
+		ADD_STR(AVOS_MR_METADATA_GENRE, id3_tag->genre);
+		ADD_STR(AVOS_MR_METADATA_TITLE, id3_tag->title);
+		ADD_STR(AVOS_MR_METADATA_DATE, id3_tag->year);
+		ADD_STR(AVOS_MR_METADATA_COMPILATION, id3_tag->compilation);
+		ADD_STR(AVOS_MR_METADATA_LOCATION, id3_tag->location);
+		ADD_INT(AVOS_MR_METADATA_IS_DRM, 0);
+	}
+	ADD_INT(AVOS_MR_METADATA_BITRATE, ((audiop->bytesPerSec + videop->bytesPerSec) * 8));
+	ADD_INT(AVOS_MR_METADATA_HAS_AUDIO, av->as_max ? 1 : 0);
+	ADD_INT(AVOS_MR_METADATA_HAS_VIDEO, av->vs_max ? 1 : 0);
+
+	if (duration > 0)
+		ADD_INT(AVOS_MR_METADATA_DURATION, duration);
+	if (mr->mimetype)
+		ADD_STR(AVOS_MR_METADATA_MIMETYPE, mr->mimetype);
+	if (audiop->samplesPerSec > 0)
+		ADD_INT(AVOS_MR_METADATA_SAMPLE_RATE, audiop->samplesPerSec);
+	if (audiop->bytesPerSec > 0)
+		ADD_INT(AVOS_MR_METADATA_AUDIO_BITRATE, (audiop->bytesPerSec * 8));
+	if (audiop->channels > 0)
+		ADD_INT(AVOS_MR_METADATA_NUMBER_OF_CHANNELS, audiop->channels);
+	if (audiop->format > 0)
+		ADD_INT(AVOS_MR_METADATA_AUDIO_WAVE_CODEC, audiop->format);
+
+	if (videop->bytesPerSec > 0)
+		ADD_INT(AVOS_MR_METADATA_VIDEO_BITRATE, (videop->bytesPerSec * 8));
+	if (videop->framesPerSec > 0)
+		ADD_INT(AVOS_MR_METADATA_FRAMES_PER_THOUSAND_SECONDS, videop->framesPerSec);
+	if (videop->fourcc > 0)
+		ADD_INT(AVOS_MR_METADATA_VIDEO_FOURCC_CODEC, videop->fourcc);
+	if (videop->width > 0)
+		ADD_INT(AVOS_MR_METADATA_VIDEO_WIDTH, videop->width);
+	if (videop->height > 0)
+		ADD_INT(AVOS_MR_METADATA_VIDEO_HEIGHT, videop->height);
+
+	if (mr->type == TYPE_VID && av->vs_max > 0) {
+		ADD_INT(AVOS_MR_METADATA_NB_VIDEO_TRACK, av->vs_max);
+
+		gap_key = AVOS_MR_METADATA_VIDEO_TRACK;
+		token = video_get_fourcc_name(videop);
+		ADD_STR(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_FORMAT, token);
+
+		if (videop->width > 0 && videop->height > 0) {
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_WIDTH, videop->width);
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_HEIGHT, videop->height);
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_ASPECT_N, videop->aspect_n);
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_ASPECT_D, videop->aspect_d);
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_PIXEL_FORMAT, videop->colorspace);
+		}
+
+		ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_PROFILE, videop->profile);
+
+		ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_LEVEL, videop->level);
+
+		if (videop->bytesPerSec > 0)
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_BIT_RATE, videop->bytesPerSec / 125);
+
+		if (videop->framesPerSec > 0)
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_FPS, videop->framesPerSec);
+
+		if (videop->rate > 0)
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_FPS_RATE, videop->rate);
+
+		if (videop->scale > 0)
+			ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_FPS_SCALE, videop->scale);
+
+		ADD_INT(gap_key + AVOS_MR_METADATA_VIDEO_TRACK_S3D_MODE, videop->stereo_mode);
+	}
+	if (mr->type == TYPE_AUD)
+		av->as_max = 1;
+	if (av->as_max > 0 && av->as_max <= AUDIO_TRACK_MAX) {
+		ADD_INT(AVOS_MR_METADATA_NB_AUDIO_TRACK, av->as_max);
+		for (i = 0; i < av->as_max; ++i) {
+			audiop = &av->audio[i];
+			gap_key = AVOS_MR_METADATA_AUDIO_TRACK + i * AVOS_MR_METADATA_AUDIO_TRACK_MAX;
+
+			ADD_STR(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_NAME, audiop->name);
+
+			token = audio_get_format_name(audiop);
+			ADD_STR(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_FORMAT, token);
+
+			if (audiop->bytesPerSec > 0)
+				ADD_INT(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_BIT_RATE, audiop->bytesPerSec / 125);
+
+			if (audiop->samplesPerSec > 0)
+				ADD_INT(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_SAMPLE_RATE, audiop->samplesPerSec);
+
+			token = audio_get_channel_layout_name(audiop->channels);
+			ADD_STR(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_CHANNELS, token);
+
+			ADD_INT(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_VBR, audiop->vbr);
+
+			ADD_STR(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_LANGUAGE, audiop->lang);
+			ADD_INT(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_DISPOSITION, audiop->disposition);
+
+			int supported = 0;
+			STREAM_DEC_AUDIO *dec = stream_get_audio_dec( audiop );
+			if( dec ) {
+				supported = 1;
+				if( dec->is_supported ) {
+					supported = dec->is_supported( audiop ) ? 1 : 0;
+				}
+			}
+			ADD_INT(gap_key + AVOS_MR_METADATA_AUDIO_TRACK_SUPPORTED, supported);
+		}
+	}
+	if (mr->type == TYPE_VID && av && av->subs_max > 0 && av->subs_max <= SUB_TRACK_MAX) {
+		ADD_INT(AVOS_MR_METADATA_NB_SUBTITLE_TRACK, av->subs_max);
+		for (i = 0; i < av->subs_max; ++i) {
+			gap_key = AVOS_MR_METADATA_SUBTITLE_TRACK + i * AVOS_MR_METADATA_SUBTITLE_TRACK_MAX;
+			ADD_STR(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_NAME, av->sub[i].name);
+			ADD_STR(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_PATH, av->sub[i].path);
+			// note: no ADD_BOOL macro, so use ADD_INT
+			ADD_INT(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_IS_GFX, av->sub[i].gfx);
+			ADD_INT(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_FORMAT, av->sub[i].format);
+			ADD_STR(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_LANGUAGE, av->sub[i].lang);
+			serprintf("avos_mr_fillmetadata: sub[%d] disp=%d\n", i, av->sub[i].disposition);
+			ADD_INT(gap_key + AVOS_MR_METADATA_SUBTITLE_TRACK_DISPOSITION, av->sub[i].disposition);
+		}
+	}
+
+	avos_metadata_write_end(buffer);
+	return AVOS_ERR_OK;
+quit:
+	avos_metadata_write_begin(buffer); // never publish a partially serialized result
+	return AVOS_ERR;
+}
+
+static int avos_mr_retrieve(avos_mr_t *mr)
+{
+	if (!mr->info_valid) {
+		avos_mr_begin(mr);
+		if (get_url_info_with_abort(&mr->src, mr->type, mr->etype, &mr->info,
+			&mr->apic, avos_mr_aborted, mr) || avos_mr_aborted(mr) ||
+			avos_mr_fillmetadata(mr) != AVOS_ERR_OK) {
+			free(mr->apic.buffer);
+			memset(&mr->apic, 0, sizeof(mr->apic));
+			mr->apic.buffer_size = APIC_MAX_SIZE;
+			return AVOS_ERR;
+		}
+		mr->info_valid = 1;
+	}
+	return AVOS_ERR_OK;
+}
+
+static int avos_mr_getmetadata(avos_mr_t *mr, metadata_buffer_t **buffer)
+{
+	MRLOGV("%p", buffer);
+	if (!buffer)
+		return AVOS_ERR;
+	if (avos_mr_retrieve(mr) != AVOS_ERR_OK)
+		return AVOS_ERR;
+	*buffer = avos_metadata_dup(mr->metadata_buffer);
+	return *buffer ? AVOS_ERR_OK : AVOS_ERR;
+}
+
+static const char* avos_mr_extractmetadata(avos_mr_t *mr, uint32_t id)
+{
+	if (avos_mr_retrieve(mr) != AVOS_ERR_OK)
+		return NULL;
+	avos_msg_t *msg = avos_metadata_get(mr->metadata_buffer, id);
+	if (!msg || msg->type != AVOS_MSG_TYPE_STR) {
+		MRLOGV("[%u|(null)]", id);
+		return NULL;
+	}
+	MRLOGV("[%u|%s]", id, (const char *)msg->data);
+	return (const char *)msg->data;
+}
+
+static int avos_mr_getframe(avos_mr_t *mr, int time_ms, avos_bgra_bitmap_t **pbitmap)
+{
+	if (!pbitmap || time_ms < -1) return AVOS_ERR;
+	*pbitmap = NULL;
+	avos_mr_begin(mr);
+	int ret = AVOS_ERR_OK;
+	int rotation = 0;
+	struct SwsContext *sws = NULL;
+	avos_bgra_bitmap_t *bitmap = NULL;
+	mr->thumb_stream = thumb_stream_create();
+	if (!mr->thumb_stream) return AVOS_ERR;
+	IMAGE *img = thumb_stream_get_frame(mr->thumb_stream, &mr->src, mr->etype,
+		time_ms, AV_IMAGE_BGRA_32, &rotation, avos_mr_aborted, mr);
+	if (!img || avos_mr_aborted(mr)) goto out;
+	if (!img->data[0] || img->width <= 0 || img->height <= 0 ||
+	    img->width > VIDEO_MAX_WIDTH || img->height > VIDEO_MAX_HEIGHT ||
+	    img->linestep[0] < img->width || img->linestep[0] > INT_MAX / 4 ||
+	    (int64_t)(img->height - 1) * img->linestep[0] * 4 + (int64_t)img->width * 4 > img->size) {
+		ret = AVOS_ERR;
+		goto out;
+	}
+	int width = 512;
+	int height = (int64_t)img->height * width / img->width;
+	if (height < 1 || height > 4096) goto out;
+	size_t bytes = (size_t)width * height * 4;
+	bitmap = calloc(1, sizeof(*bitmap) + bytes);
+	if (!bitmap) { ret = AVOS_ERR; goto out; }
+	bitmap->width = width;
+	bitmap->height = height;
+	bitmap->linestep = width;
+	bitmap->rotation = rotation;
+	bitmap->data_size = bytes;
+	bitmap->data = (uint8_t *)(bitmap + 1);
+	sws = sws_getContext(img->width, img->height, AV_PIX_FMT_BGRA,
+		width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
+	const uint8_t *src[4] = { img->data[0] };
+	int src_stride[4] = { img->linestep[0] * 4 };
+	uint8_t *dst[4] = { bitmap->data };
+	int dst_stride[4] = { width * 4 };
+	if (!sws || sws_scale(sws, src, src_stride, 0, img->height, dst, dst_stride) != height) {
+		ret = AVOS_ERR;
+		goto out;
+	}
+	if (!avos_mr_aborted(mr)) { *pbitmap = bitmap; bitmap = NULL; }
+out:
+	sws_freeContext(sws);
+	free(bitmap);
+	thumb_stream_destroy(mr->thumb_stream);
+	mr->thumb_stream = NULL;
+	return ret;
+}
+
+static int avos_mr_getapic(avos_mr_t *mr, avos_apic_t **papic)
+{
+	avos_apic_t *apic;
+
+	if (!papic) return AVOS_ERR;
+	*papic = NULL;
+	if (avos_mr_retrieve(mr) != AVOS_ERR_OK || !mr->apic.valid)
+		return AVOS_ERR_OK; // not critical, apic is NULL
+
+	if (!mr->apic.buffer || mr->apic.size > mr->apic.buffer_size || mr->apic.size > APIC_MAX_SIZE)
+		return AVOS_ERR;
+	apic = (avos_apic_t *) calloc(1, sizeof(avos_apic_t) + mr->apic.size);
+	if (!apic)
+		return AVOS_ERR;
+	apic->size = mr->apic.size;
+	memcpy(apic->data, mr->apic.buffer, mr->apic.size);
+	*papic = apic;
+	return AVOS_ERR_OK;
+}
+
+static const avos_mr_handle_t avos_mr_handle = {
+	.create = avos_mr_create,
+	.destroy = avos_mr_destroy,
+	.setdatasource = avos_mr_setdatasource,
+	.setdatasource_fd = avos_mr_setdatasource_fd,
+	.getmetadata = avos_mr_getmetadata,
+	.extractmetadata = avos_mr_extractmetadata,
+	.getframe = avos_mr_getframe,
+	.getapic = avos_mr_getapic,
+	.cancel = avos_mr_cancel,
+};
+
+const avos_mr_handle_t *avos_mr_get_handle()
+{
+	return &avos_mr_handle;
+}

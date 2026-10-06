@@ -1,0 +1,609 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+/*
+** Copyright 2007, The Android Open Source Project
+**
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** You may obtain a copy of the License at
+**
+**     http://www.apache.org/licenses/LICENSE-2.0
+**
+** Unless required by applicable law or agreed to in writing, software
+** distributed under the License is distributed on an "AS IS" BASIS,
+** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+** See the License for the specific language governing permissions and
+** limitations under the License.
+*/
+-->
+<resources xmlns:tools="http://schemas.android.com/tools" xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2" tools:ignore="MissingTranslation">
+    <!-- Menu item that takes the user back to the top level screen of the music player -->
+    <string name="goto_start">کتابخانه</string>
+    <!-- Menu item that takes the user to the "now playing" screen of the music player -->
+    <!-- Menu item to refresh servers list -->
+    <string name="refresh_servers_list">تازه کردن لیست سفارشات</string>
+    <!-- Menu item to enable network shares -->
+    <string name="initial_scan" tools:ignore="UnusedResources">جستجوي سريع</string>
+    <!-- Library screen, menu item -->
+    <string name="search_title">جستجو</string>
+    <!-- Default name of track that doesn't have a name in the metadata -->
+    <string name="unknown_track_name">ناشناخته</string>
+    <!-- Toast after turning shuffle on -->
+    <!-- Toast after turning shuffle off -->
+    <!-- Toast after turning single repeat on -->
+    <!-- Context menu item -->
+    <string name="info">اطلاعات</string>
+    <!-- Context menu item -->
+    <string name="play_selection">پخش</string>
+    <!-- Context menu item -->
+    <string name="multiple_selection">انتخاب چندگانه</string>
+    <!-- Context menu item -->
+    <string name="play_from_beginning">Play from beginning</string>
+    <!-- Dialog box button -->
+    <!--The fast scroll thumb will show one character from this string depending on the position in the list -->
+    <string name="fast_scroll_alphabet">\u0020ABCDEFGHIJKLMNOPQRSTUVWXYZ</string>
+    <!-- The string used in file/folder infos dialog. -->
+    <string name="video_sources">منابع</string>
+    <!-- Infos dialog tabs -->
+    <string name="info_tab_file">اطلاعات فایل</string>
+    <string name="info_menu_backdrop_select">پس زمینه</string>
+    <string name="info_menu_series_backdrop_select">پس زمینه سریال ها</string>
+    <string name="info_menu_poster_select">انتخاب پوستر دیگر</string>
+    <string name="info_menu_series_poster_select">انتخاب پوستر دیگر</string>
+    <!-- COVER ROLL -->
+    <string name="watching_up_next">بعدی</string>
+    <string name="recently_added">اخیراً افزوده شده</string>
+    <string name="recently_added_videos">اخیراً افزوده شده</string>
+    <string name="recently_played">اخیراً پخش شده</string>
+    <string name="recently_played_videos">اخیراً پخش شده</string>
+    <string name="new_and_unwatched"></string>
+    <string name="video_lists">لیست های پخش</string>
+    <!-- The string used in main storage list -->
+    <string name="external_storage" tools:ignore="UnusedResources">کارت SD خارجی</string>
+    <string name="internal_storage">حافظه داخلی</string>
+    <string name="network_storage">شبکه</string>
+    <string name="sd_card_storage">کارت SD</string>
+    <string name="usb_host_storage">حافظه خارجی</string>
+    <string name="other_storage">حافظه دیگر</string>
+    <string name="network_media_servers">سرور رسانه (UPnP)</string>
+    <string name="network_shared_folders">پوشه های مشترک (SMB)</string>
+    <string name="network_connected_as">متصل شده به عنوان %s</string>
+    <string name="network_guest">مهمان</string>
+    <string name="network_jcifs">Samba (آزمایشی)</string>
+    <string name="network_cling">UPNP (آزمایشی)</string>
+    <string name="root_storage">حافظه داخلی</string>
+    <!-- VIDEO -->
+    <string name="videos">ویدیوها</string>
+    <string name="all_videos">همه ویدیوها</string>
+    <string name="not_played_yet_videos">هنوز پخش نشده</string>
+    <string name="video_folder">پوشه‌ها</string>
+    <string name="movies">فیلم‌ها</string>
+    <string name="animes">انیمیشن ها</string>
+    <string name="all_movies">همه فیلم ها</string>
+    <string name="all_movies_format">همه فیلم ها - %d</string>
+    <string name="all_animes_format">همه انیمیشن ها - %d</string>
+    <string name="all_collections" tools:ignore="UnusedResources">همه مجموعه ها</string>
+    <string name="all_collections_format">همه مجموعه ها - %d</string>
+    <string name="not_watched_movies_format">تماشا نشده - %d</string>
+    <string name="not_watched_animes_format">تماشا نشده - %d</string>
+    <string name="movies_by_alpha">فیلم ها بر اساس حروف الفبا</string>
+    <string name="movies_by_genre">فیلم ها بر اساس ژانر</string>
+    <string name="movies_by_rating">فیلم ها بر اساس رتبه بندی</string>
+    <string name="movie_collections">مجموعه‌ها</string>
+    <string name="anime_collections">مجموعه های انیمیشن</string>
+    <string name="movies_by_year">فیلم ها بر اساس سال</string>
+    <string name="all_tv_shows">سریال ها</string>
+    <string name="all_tvshows">همه سریال ها</string>
+    <string name="all_animes">تمامی فیلم های انیمیشن</string>
+    <string name="all_animes_row">همه انیمیشن ها</string>
+    <string name="all_animeshows">همه سریال های انیمیشنی</string>
+    <string name="animes_by_alpha">فیلم های انیمیشن بر اساس حروف الفبا</string>
+    <string name="animes_by_genre">فیلم های انیمیشن بر اساس ژانر</string>
+    <string name="animes_by_rating">فیلم های انیمیشن بر اساس نمره بندی</string>
+    <string name="animes_by_year">فیلم های انیمیشن بر اساس سال</string>
+    <string name="all_tvshows_format">تمام سریال ها - %d</string>
+    <string name="not_watched_tvshows_format">تماشا نشده - %d</string>
+    <string name="all_animeshows_format">همه سریال های انیمیشنی - %d</string>
+    <string name="not_watched_animeshows_format">تماشا نشده - %d</string>
+    <string name="all_seasons">همه‌ی فصل‌ها</string>
+    <string name="tvshows_by_alpha">سریال ها بر اساس حروف الفبا</string>
+    <string name="tvshows_by_genre">سریال ها بر اساس ژانر</string>
+    <string name="tvshows_by_rating">سریال ها بر اساس رتبه بندی</string>
+    <string name="animation_shows_by_alpha">نمایش بصورت الفبا</string>
+    <string name="episodes_by_date">قسمت ها بر اساس تاریخ</string>
+    <string name="date_view_week">هفته</string>
+    <string name="date_view_month">ماه</string>
+    <string name="date_view_year">سال</string>
+    <string name="all_movies_and_tv_shows">فیلم ها و سریال ها</string>
+    <string name="non_scraped_videos">ویدیوهای scrap نشده</string>
+    <string name="cannot_open_video">نمی‌توان این فایل را باز کرد</string>
+    <string name="confirm_delete">آیا از حذف این مورد اطمینان دارید؟</string>
+    <string name="deleting">درحال پاک کردن…</string>
+    <string name="directory_deleted">پوشه حذف شد</string>
+    <string name="resume">ادامه</string>
+    <string name="remote_resume">ادامه از راه دور</string>
+    <string name="bookmark">نشانک</string>
+    <string name="delete">هذف</string>
+    <string name="confirm_delete_short">پذیرش هذف</string>
+    <string name="delete_resume">حذف ادامه</string>
+    <string name="mark_as_watched">علامت بعنوان تماشا شده</string>
+    <string name="mark_as_not_watched">علامت بعنوان تماشا نشده</string>
+    <string name="scrap_no_info">شما اطلاعات فیلم و سریالی برای این ویدئو ندارید.</string>
+    <string name="scrap_remove">حذف جزئیات</string>
+    <string name="scrap_remove_short">هذف</string>
+    <!-- for small screens -->
+    <string name="scrap_change">تغییر جزئیات همه‌ی قسمت‌ها</string>
+    <string name="scrap_series_change">تغییر جزئیات سریال</string>
+    <string name="scrap_change_confirmation">تغییر همه قسمت ها از \t%1$s\n تا \n\t%2$s ؟</string>
+    <string name="scrap_change_title">در حال تغییر همه قسمت ها</string>
+    <string name="scrap_change_initializing">آماده سازی&#8230;</string>
+    <string name="scrap_change_finalizing">در حال نهایی شدن…</string>
+    <string name="scrap_get_title">در حال دریافت اطلاعات</string>
+    <!-- Generic strings for Movies or TV shows -->
+    <string name="scrap_director">کارگردان</string>
+    <string name="scrap_writer">نويسنده</string>
+    <string name="scrap_director_format">کارگردان: %s</string>
+    <string name="scrap_writer_format">نویسنده: %s</string>
+    <string name="scrap_rating">رتبه‌بندی</string>
+    <string name="scrap_rating_format">رتبه‌بندی: %s</string>
+    <string name="scrap_year">سال</string>
+    <string name="scrap_year_format">سال: %d</string>
+    <string name="scrap_studio">استودیو</string>
+    <string name="scrap_plot">خلاصه</string>
+    <string name="scrap_trailer">تریلرها</string>
+    <string name="scrap_cast">بازیگران</string>
+    <string name="scrap_cast_format">بازیگران: %s</string>
+    <string name="scrap_genre">ژانر</string>
+    <string name="scrap_genre_title">ژانرها</string>
+    <string name="scrap_aired">پخش شده</string>
+    <string name="scrap_aired_format">پخش‌شده: %s</string>
+    <!-- Specific strings for TV shows -->
+    <string name="episode_name">قسمت</string>
+    <string name="episode_season">فصل</string>
+    <string name="episode_specials">ویژه‌ها</string>
+    <string name="episode_identification" tools:ignore="PluralsCandidate">فصل %1$d قسمت %2$d</string>
+    <string name="season_identification">فصل %1$d</string>
+    <string name="next_episode">قسمت بعد</string>
+    <string name="list_episodes">لیست قسمت‌ها</string>
+    <string name="how_to_mark_season_watched">روی یک فصل کلیک کنید تا تمام قسمت های تماشا شده یا تماشا نشده آن را علامت گذاری کنید</string>
+    <string name="how_to_unindex_season">روی یک فصل کلیک کنید تا تمام قسمت های آن را از کتابخانه حذف کنید</string>
+    <string name="how_to_delete_season">روی یک فصل کلیک کنید تا تمام قسمت های آن را حذف کنید</string>
+    <string name="no_episode_watched">هیچ قسمتی تماشا نشده</string>
+    <string name="all_episodes_watched">تمامی قسمت‌ها تماشا شده‌اند</string>
+    <plurals name="n_episodes_watched">
+        <item quantity="one">%d قسمت تماشا شده</item>
+        <item quantity="other">%d قسمت تماشا شده</item>
+    </plurals>
+    <string name="scrap_processing">در حال بازیابی متادیتا…</string>
+    <string name="scrap_no_network">به شبکه متصل نیست.</string>
+    <string name="scrap_enable_network_first">"لطفاً ابتدا به یک شبکه متصل شوید تا بتوانید این برنامه را اجرا کنید."</string>
+    <string name="scrap_failed">فیلم در پایگاه داده آنلاین یافت نشد.</string>
+    <string name="start_auto_scraper_activity">جستجوی آنلاین اطلاعات</string>
+    <string name="scraper_settigns">اطلاعات &amp; پوسته</string>
+    <string name="scrap_status_initial">در صف انتظار</string>
+    <string name="scrap_status_busy">درحال جستجو…</string>
+    <string name="scrap_status_success">بروز شد</string>
+    <string name="scrap_status_failed">اطلاعات یافت نشد</string>
+    <string name="scrap_status_rejected">اطلاعات حذف شد</string>
+    <string name="scrap_status_unknown">ناشناخته</string>
+    <string name="scraper_abort_request">نسبت به لغو عملیات مطمئن هستید؟</string>
+    <string name="scraper_no_files">هیچ فایلی برای پردازش وجود ندارد</string>
+    <string name="scraper_no_new_files">فایل جدیدی برای پردازش وجود ندارد</string>
+    <string name="scraper_no_new_files_in_folder">فایل جدیدی برای پردازش در این پوشه وجود ندارد</string>
+    <string name="scraper_folder_no_files" tools:ignore="PluralsCandidate">با این حال هنوز %d ویدیو وجود دارد که قبلاً هیچ اطلاعاتی برای آنها یافت نشد.</string>
+    <string name="scraper_folder_no_file">با این حال هنوز یک ویدیو وجود دارد که قبلاً هیچ اطلاعاتی برای آن یافت نشد.</string>
+    <string name="scraper_folder_try_again">آیا می خواهید دوباره امتحان کنید؟</string>
+    <string name="scraper_notification_title">درحال جستجوی اطلاعات آنلاین</string>
+    <string name="scraper_notification_progress" tools:ignore="PluralsCandidate">\"%1$d فایل از %2$d فایل پردازش شد</string>
+    <string name="scraper_no_episode_found">هیچ قسمتی پیدا نشد</string>
+    <string name="scraper_suggest_message">می‌توانید پوسترها و اطلاعات ویدیوهای خود را با استفاده از منوی «جستجوی اطلاعات آنلاین» به صورت آنلاین جستجو کنید.</string>
+    <string name="scraper_no_movie_text">شما در حال حاضر هیچ پوستر و توضیحی برای فیلم های خود ندارید</string>
+    <string name="scraper_no_movie_button_label">جستجوی آنلاین اطلاعات فیلم</string>
+    <string name="scraper_no_tv_show_text">شما در حال حاضر هیچ پوستری و توضیحی برای سریال های خود ندارید</string>
+    <string name="scraper_no_tv_show_button_label">جستجوی آنلاین اطلاعات سریال</string>
+    <string name="imdb_title_url">https://www.imdb.com/title/</string>
+    <!-- To be translated only in case there is a localized IMDB -->
+    <string name="storage">حافظه</string>
+    <string name="rescan_storage">اسکن مجدد حافظه</string>
+    <string name="rescanning">اسکن مجدد دستگاه های ذخیره سازی</string>
+    <string name="rescan_storage_summary">دستگاه های ذخیره سازی داخلی، کارت SD و USB را دوباره اسکن کنید</string>
+    <string name="preference_display_all_files">نمایش تمامی فایل ها در مرورگر</string>
+    <string name="preference_display_all_files_summary">نمایش فایل های غیر ویدئویی</string>
+    <string name="info_processing">بررسی ویژگی های رسانه…</string>
+    <string name="info_audio" tools:ignore="UnusedResources">صدا</string>
+    <string name="info_audio_vbr">VBR</string>
+    <string name="info_subtitle">زیرنویس</string>
+    <string name="info_file">اطلاعات فایل</string>
+    <string name="use_remote_resume">استفاده از موقعیت از سر گیری شبکه؟</string>
+    <!-- VIDEO COVER ROLL -->
+    <string name="you_have_no_recently_added_video">ویدیویی اخیراً اضافه نشده است</string>
+    <string name="you_have_no_recently_played_video">ویدیویی اخیراً پخش نشده است</string>
+    <string name="you_have_no_video">ویدئویی وجود ندارد</string>
+    <string name="you_have_no_video_yet">درحال جستجوی ویدیوها&#8230;</string>
+    <string name="you_have_no_movies">هیچ فیلمی وجود ندارد</string>
+    <string name="you_have_no_animes">هیچ انیمیشنی وجود ندارد</string>
+    <string name="you_have_no_movie_collections">مجموعه ای وجود ندارد</string>
+    <string name="you_have_no_anime_collections">هیچ انیمه ای وجود ندارد</string>
+    <string name="you_have_no_tv_shows">هیچ سریالی وجود ندارد</string>
+    <string name="you_have_no_anime_shows">بدون هیچ سریال انیمیشنی</string>
+    <string name="you_have_no_non_scraped_videos">بدون هیچ ویدیو استراج نشده‌ای</string>
+    <plurals name="Nmovies">
+        <item quantity="one">۱ فیلم</item>
+        <item quantity="other"><xliff:g id="count">%d</xliff:g> فیلم</item>
+    </plurals>
+    <plurals name="Nepisodes">
+        <!-- number of episodes is one -->
+        <item quantity="one">۱ قسمت</item>
+        <!-- number of episodes is not equal to one -->
+        <item quantity="other"><xliff:g id="count">%d</xliff:g> قسمت</item>
+    </plurals>
+    <plurals name="Nseasons">
+        <item quantity="one">۱ فصل</item>
+        <item quantity="other"><xliff:g id="count">%d</xliff:g> فصل</item>
+    </plurals>
+    <!-- Media Center -->
+    <string name="mediacenterlabel">مرکز رسانه</string>
+    <string name="view_mode">حالت نمایش</string>
+    <string name="switch_to_list">فهرست</string>
+    <string name="switch_to_grid">جدول</string>
+    <!-- VideoPlayer -->
+    <string name="player_track">آهنگ</string>
+    <string name="player_loading_video">در حال بارگیری ویدیو \u2026</string>
+    <string name="player_audio_track_toast">فایل صوتی:</string>
+    <string name="player_subtitle_track_toast">فایل زیرنویس:</string>
+    <string name="player_bookmark_set">نشان کردن بعنوان</string>
+    <string name="player_pref_subtitle_delay_title">تاخیر</string>
+    <string name="player_pref_audio_speed_title">سرعت پخش</string>
+    <string name="floating_player_restore" tools:ignore="UnusedResources">بازگردانی</string>
+    <string name="floating_player_play" tools:ignore="UnusedResources">پخش</string>
+    <string name="floating_player_pause" tools:ignore="UnusedResources">درنگ</string>
+    <string name="player_pref_audio_delay_title">تاخیر صدا</string>
+    <string name="now_playing" tools:ignore="UnusedResources">درحال پخش</string>
+    <string name="player_window_mode">حالت پنجره</string>
+    <string name="pref_play_mode_title">حالت پخش</string>
+    <string name="pref_play_mode_entry_single">تکی</string>
+    <string name="pref_play_mode_entry_folder">پوشه</string>
+    <string name="pref_play_mode_entry_repeat_folder">تکرار پوشه</string>
+    <string name="pref_play_mode_entry_repeat_single">تکرار یکی</string>
+    <string name="pref_play_mode_entry_binge">در حال شروع تماشا</string>
+    <string name="pref_audio_parameters_title">صدا</string>
+    <string name="pref_audio_filt_title">تقویت صدا</string>
+    <string name="pref_audio_filt_night_mode">حالت شب</string>
+    <string name="ui_mode_auto">خودکار</string>
+    <string name="ui_mode_tv">تلویزیون</string>
+    <string name="ui_mode_normal">تبلت/تلفن</string>
+    <string name="pref_s3d_mode_title">حالت سه بعدی</string>
+    <string name="pref_s3d_mode_entry_sbs">کنار هم</string>
+    <string name="pref_s3d_mode_entry_topbottom">بالا و پایین</string>
+    <string name="pref_s3d_mode_entry_anaglyph">آناگلیف</string>
+    <string name="pref_s3d_mode_entry_off">خاموش</string>
+    <string name="menu_info">اطلاعات</string>
+    <string name="menu_subtitles">فایل‌های زیرنویس</string>
+    <string name="menu_audio">فایل‌های صوتی</string>
+    <string name="menu_lock_player">قفل کردن پخش‌کننده</string>
+    <string name="menu_bookmark">تنظیم نشانک</string>
+    <string name="menu_brightness_settings">روشنایی</string>
+    <string name="menu_player_settings">ساماندهی</string>
+    <string name="menu_change_folder">تغییر پوشه </string>
+    <string name="menu_change_folder_details">پوشه ای را برای شروع انتخاب کنید</string>
+    <string name="unlock_instructions">برای باز کردن قفل مدتی روی آیکون فشار دهید</string>
+    <string name="seek_to_percentage">پرش به %s%%</string>
+    <!-- Subtitles/Audio languages -->
+    <!-- Subtitles in filename HI = Hearing Impaired -->
+    <string name="subs_HI">نا/کم شنوا</string>
+    <!-- Subtitles in filename SDH = Subtitles for the Deaf and Hard of Hearing -->
+    <string name="subs_SDH">زیرنویس برای ناشنوایان و کم شنوایان</string>
+    <!-- opensubtitles REST API not recognized languages ea=Spanish (LA)|ex=Extremaduran|me=Montenegrin|ma=Manipuri|pr=Dari|sp=Spanish (EU)|sx=Santali|sy=Syriac|tp=Toki Pona|ze=Chinese bilingual -->
+    <string name="s_brazilian">برزیلی</string>
+    <string name="s_chinese">چینی</string>
+    <string name="s_chinese_simplified">چینی ساده شده</string>
+    <string name="s_traditional_chinese">چینی سنتی</string>
+    <string name="s_chinese_bilingual">چینی دو زبانه</string>
+    <string name="s_chinese_mainland">چینی (سرزمین اصلی چین)</string>
+    <string name="s_chinese_hk">چینی (هنگ کنگ)</string>
+    <string name="s_chinese_tw">چینی (تایوان)</string>
+    <string name="s_spanish_la">اسپانیایی (LA)</string>
+    <string name="s_extremaduran">اکسترمادوران</string>
+    <string name="s_montenegrin">مونته نگرو</string>
+    <string name="s_manipuri">مانیپوری</string>
+    <string name="s_dari">دری</string>
+    <string name="s_portuguese_mz">پرتغالی (MZ)</string>
+    <string name="s_spanish_eu">اسپانیایی (اتحادیه اروپا)</string>
+    <string name="s_santali">سانتالی</string>
+    <string name="s_syriac">سریانی</string>
+    <string name="s_toki_pona">Toki Pona</string>
+    <string name="s_none">هیچ کدام</string>
+    <!-- Player errors -->
+    <string name="player_err_cantplayvideo">نمی‌توان ویدئو را پخش نمود</string>
+    <string name="player_err_cantplaysound">نمی‌توان صدا را پخش نمود</string>
+    <string name="player_err_file">فایل ویدیویی وجود ندارد.</string>
+    <string name="player_err_sizetoobig">حجم ویدیو خیلی زیاد است</string>
+    <string name="player_err_unknown">خطای نامشخص.</string>
+    <string name="player_err_critical">خطای پخش کننده.</string>
+    <string name="player_err_forcodec">برای کدک</string>
+    <string name="player_err_notinterleaved">جریان‌های ویدیویی و صوتی درهم‌تنیده نیستند.</string>
+    <string name="player_err_codec">کدک</string>
+    <string name="player_err_isnotsupported">پشتیبانی نمی‌شود.</string>
+    <string name="player_err_fileNoLicense">مجوزی برای این فایل یافت نشد.</string>
+    <string name="player_err_fileerror">فایل آسیب دیده یا ناقص است.</string>
+    <string name="player_err_connection_failed">اتصال برقرار نشد.</string>
+    <string name="player_err_video_decoder_error">خطای رمزگشای ویدیو:</string>
+    <string name="player_err_qpel_and_gmc">\"Quarter Pixel\" و \"GMC\"</string>
+    <string name="player_err_profile_and_level">\"نمایه\" و \"سطح\"</string>
+    <string name="player_err_interlaced">درهم آمیخته</string>
+    <!-- Player plug-in -->
+    <string name="player_plugin_video_msg">این فایل حاوی یک قالب ویدیویی <xliff:g id="video">%1$s</xliff:g> است.</string>
+    <string name="player_plugin_audio_msg">این فایل حاوی یک قالب صوتی <xliff:g id="audio">%1$s</xliff:g> است.</string>
+    <string name="player_plugin_video_audio_msg">این فایل دارای یک قالب ویدیویی <xliff:g id="video">%1$s</xliff:g> و یک قالب صوتی <xliff:g id="audio">%2$s</xliff:g> است.</string>
+    <string name="player_plugin_purchase" tools:ignore="UnusedResources">رفتن به فروشگاه</string>
+    <string name="player_plugin_purchase_google_play_button">به Google Play بروید</string>
+    <string name="plugin_update_required_title">به روز رسانی کدک مورد نیاز است</string>
+    <string name="plugin_update_required_message">به نظر می رسد که شما قبلا کدک های اضافی برای Nova Video Player نصب کرده اید.\n\nاین نسخه جدید Nova Video Player نیاز به بروز رسانی این کدک ها دارد.\n\nلطفا برای به روز رسانی و نصب مجدد کدک ها به Google Play بروید.</string>
+    <!-- Subtitles wizard -->
+    <string name="get_subtitles_on_drive">انتخاب زیرنویس از حافظه</string>
+    <string name="subtitles_wizard_no_files">فایل زیرنویس یافت نشد</string>
+    <string name="subtitles_wizard_current_files">فایل‌های زیرنویس فعلی</string>
+    <string name="subtitles_wizard_available_files">فایل‌های زیرنویس موجود</string>
+    <string name="subtitles_wizard_associate">مرتبط سازی این فایل به ویدیو</string>
+    <string name="subtitles_wizard_delete">هذف این پرونده</string>
+    <string name="subtitles_wizard_empty_list">پرونده‌ای یافت نشد</string>
+    <string name="subtitles_wizard_add_files">می توانید فایل های زیرنویس بیشتری را در این پوشه کپی کنید تا آنها را به این ویدیو مرتبط کنید.</string>
+    <string name="subtitles_wizard_help">هر یک از فایل های زیرنویس موجود را انتخاب کنید تا آن را با ویدیو %s مرتبط کنید. فایل به منظور مطابقت با نام ویدیو تغییر نام می دهد.</string>
+    <string name="subtitles_wizard_empty_list_help">هیچ فایل زیرنویسی پیدا نشد شما باید ابتدا یک یا چند فایل زیرنویس را در این پوشه کپی کنید تا آنها را با ویدیو %s مرتبط کنید.</string>
+    <string name="subtitles_wizard_cache">کش</string>
+    <!-- Subloader -->
+    <string name="get_subtitles_online">دریافت زیرنویس آنلاین</string>
+    <string name="toast_subloader_service_unreachable">اختلال در سرویس زیرنویس آنلاین</string>
+    <string name="dialog_subloader_copying">در حال کپی زیرنویس…</string>
+    <string name="dialog_subloader_fails">زیرنویسی پیدا نشد برای:</string>
+    <string name="dialog_subloader_nonetwork_title">بدون اتصال اینترنت</string>
+    <string name="dialog_subloader_nonetwork_message">برای دانلود زیرنویس ها نیاز به اتصال به اینترنت است</string>
+    <string name="dialog_subloader_connecting">اتصال به سرویس opensubtitle&#8230;</string>
+    <string name="opensubtitles_quota_download_remaining" tools:ignore="PluralsCandidate">صف دانلود OpenSubtitles: %1$d/%2$d باقی مانده</string>
+    <string name="dialog_subloader_credentials">اعتبارنامه OpenSubtitles</string>
+    <string name="dialog_subloader_credentials_empty">شما باید یک نام کاربری و رمز عبور معتبر مشخص کنید!</string>
+    <string name="toast_subloader_credentials_empty">اعتبارنامه OpenSubtitles خود را در تنظیمات ارائه دهید تا بتوانید زیرنویس های بیشتری دانلود کنید</string>
+    <string name="toast_subloader_login_failed">اعتبار نامه OpenSubtitles نادرست است و یا سرویس در دسترس نیست</string>
+    <string name="toast_subloader_quota_exceeded">صف دانلود OpenSubtitles از حد گذشت</string>
+    <string name="opensubtitles_quota_reset_time_remaining">صف بازنشانی می‌شود در %s</string>
+    <!-- Subtitle Settings Dialog -->
+    <string name="subtitle_sample_text">\"نمونه\"</string>
+    <string name="subtitle_size_text">اندازه:</string>
+    <string name="subtitle_style_text">سبک:</string>
+    <string name="subtitle_vert_text">موقعیت عمودی:</string>
+    <string name="subtitle_outline">طرح کلی زیرنویس</string>
+    <!-- Subtitle Delay Dialog -->
+    <string name="subtitle_delay_speed">تنظیم سرعت</string>
+    <string name="subtitle_delay_radio_none">هیچ</string>
+    <string name="subtitle_delay_radio_ntsc2pal">زیرنویس خیلی سریع</string>
+    <string name="subtitle_delay_radio_pal2ntsc">زیرنویس خیلی آهسته</string>
+    <!-- Browser.CommonDetailsView -->
+    <!-- Add a space after the right quote
+    because the right part of the quote is
+    not visible otherwise -->
+    <string name="quotation_format">&#x201C;%s&#x201D;&#x2003;</string>
+    <string name="error_permission" tools:ignore="UnusedResources">مجوزها کافی نیست</string>
+    <string name="error_permission_storage">Nova Video Player برای خواندن ویدیوهای محلی به مجوز ذخیره‌سازی نیاز دارد، لطفاً این اجازه را بدهید.</string>
+    <string name="error_permission_all_file_access">Nova Video Player برای مدیریت صحیح ویدیوها/فایل‌های NFO به تمام مجوزهای مدیریت حافظه خارجی نیاز دارد، لطفاً این مجوز را اعطا کنید.</string>
+    <string name="allow">اجازه دادن</string>
+    <string name="exit">خروج</string>
+    <!-- torrent -->
+    <string name="error">خطایی رخ داد</string>
+    <string name="error_protocol_not_supported">خطا: پروتکل پشتیبانی نمی شود</string>
+    <string name="error_loading_torrent">خطا هنگام بارگیری تورنت</string>
+    <string name="error_downloading_not_enough_space">خطا هنگام دانلود تورنت: فضای کافی نیست</string>
+    <string name="loading_torrent">در حال بارگیری تورنت…</string>
+    <string name="error_no_video_file">بدون فایل ویدیویی</string>
+    <string name="torrent_file_to_play">انتخاب فایلی برای پخش</string>
+    <!-- Shortcuts -->
+    <string name="browse_net_server">مرور اشتراک‌های شبکه</string>
+    <string name="add_ssh_server">مرور سرور FTP</string>
+    <string name="add_ssh_shortcut">افزودن به عنوان میانبر</string>
+    <string name="ssh_prompt">نوع FTP</string>
+    <string name="protocol_prompt">نوع پروتکل</string>
+    <string name="remove_from_shortcuts">هذف میانبر</string>
+    <string name="shortcut_removed">میانبر %s حذف شد</string>
+    <string name="server_not_available" tools:ignore="UnusedResources">در حال حاضر سرور در دسترس نیست</string>
+    <string name="network_shortcuts">میانبرهای شبکه</string>
+    <string name="shortcut_list_empty">هیچ میانبر شبکه ای ایجاد نشده است.\n\nبرای ایجاد میانبر برای پوشه های راه دور دلخواه خود، روی پوشه های مورد نظر طولانی کلیک کنید و \"%s\" را در نوار اقدام بالا انتخاب کنید.</string>
+    <string name="ftp_shortcut_list_empty">برای ایجاد میانبر برای پوشه های راه دور دلخواه خود، هنگام مرور سرور، \"%s\" را در نوار اقدام بالا انتخاب کنید.</string>
+    <string name="indexed_folders">پوشه‌های فهرست شده</string>
+    <string name="ftp_shortcuts">میانبرهای FTP</string>
+    <string name="add_to_indexed_folders">فهرست کردن پوشه</string>
+    <string name="add_to_library">افزودن به کتابخانه</string>
+    <string name="add_all_items_to_library">فوراً همه ویدیوها را به کتابخانه اضافه می‌کنید؟</string>
+    <string name="invalid_host">قالب آدرس میزبان معتبر نیست</string>
+    <string name="invalid_port">فرمت پورت معتبر نیست</string>
+    <string name="invalid_path">فرمت مسیر معتبر نیست</string>
+    <string name="shortcut_folder_added">پوشه %s بعنوان میانبر اضافه شد</string>
+    <string name="indexed_folder_added">پوشه %s به کتابخانه اضافه شد</string>
+    <string name="remove_from_indexed_folders">حذف از کتابخانه</string>
+    <string name="indexed_folder_removed">پوشه %s از کتابخانه حذف شد</string>
+    <string name="indexed_folders_list_empty">هیچ پوشه شبکه‌ای در حال حاضر فهرست‌بندی نشده است. \n\nشما می‌توانید محتوای یک پوشه شبکه را به کتابخانه اضافه کنید. برای این کار، به این پوشه مراجعه کنید و گزینه \"%s\" را از نوار اقدامات بالای صفحه انتخاب کنید.</string>
+    <string name="indexed_folders_list_empty_ftp">در حال حاضر هیچ پوشه ftp ایندکس نشده.</string>
+    <string name="indexed_folders_list_empty_network">در حال حاضر هیچ پوشه‌ای از شبکه ایندکس نشده.</string>
+    <string name="open_indexed_folder">"باز کردن"</string>
+    <string name="rescan_indexed_folders">اسکن مجدد تمام پوشه‌های ایندکس شده</string>
+    <string name="last_rescan_never">هرگز</string>
+    <string name="upnp_indexing_warning_title">در حال ایندکس UPnP</string>
+    <string name="upnp_indexing_warning_message">نمایه سازی UPnP به اندازه نمایه سازی SMB امکان ندارد.\nتوصیه می شود اگر سرور یا رایانه شخصی شما از آن پشتیبانی می کند، به جای آن یک پوشه SMB را فهرست کنید.\n</string>
+    <string name="ssh_remote_address">آدرس راه دور</string>
+    <string name="ssh_port">پورت</string>
+    <string name="ssh_password">گذرواژه</string>
+    <string name="ssh_username">نام کاربری</string>
+    <string name="ssh_shortcut_name">اسم میانبر</string>
+    <string name="smb_domain">دامنه(اختیاری)</string>
+    <!-- Preferences -->
+    <string name="preferences">تنظیمات</string>
+    <string name="upgrade_to_add_free_version">ارتقا به نسخه بدون تبلیغ</string>
+    <string name="preferences_about">درباره</string>
+    <string name="preferences_category_video">ویدیو</string>
+    <string name="preferences_force_software_decoding">رمزگشایی نرم افزاری اجباری</string>
+    <string name="preferences_force_software_decoding_summary">اگر برخی ویدیوها پخش نمی شوند، می توانید این گزینه را امتحان کنید</string>
+    <string name="preferences_force_audio_passthrough">عبور صدا</string>
+    <string name="preferences_force_audio_passthrough_disabled">غیرفعال (توصیه شده)</string>
+    <string name="preferences_force_audio_passthrough_enable">کپسوله‌سازی Nova (آزمایشی)</string>
+    <string name="preferences_force_audio_passthrough_enable2">کپسوله‌سازی سیستم</string>
+    <string name="preferences_force_audio_passthrough_summary">صدای فشرده شده را از طریق HDMI یا S/PDIF منتقل کنید. ⚠ آزمایشی ممکن است منجر به عدم هماهنگی A/V شود</string>
+    <string name="preferences_parser_sync_mode">حالت همگام‌سازی تجزیه‌گر</string>
+    <string name="preferences_parser_sync_mode_cdata">مبتنی بر PTS (توصیه می شود)</string>
+    <string name="preferences_parser_sync_mode_sample">مبتنی بر نمونه</string>
+    <string name="preferences_parser_sync_mode_summary">حالت همگام سازی در تجزیه کننده lavc. ⚠گزینه آزمایشی ممکن است منجر به تاخیر انباشته A/V شود</string>
+    <string name="preferences_stream_buffer_size_title">اندازه بافر استریم</string>
+    <string name="preferences_stream_buffer_size_summary">مقدار کش استفاده شده قبل از تجزیه کننده برای مقابله با مشکلات بافر در مگابایت</string>
+    <string name="preferences_stream_max_iframe_size_title">حداکثر اندازه i-frame</string>
+    <string name="preferences_stream_max_iframe_size_summary">حداکثر اندازه i-frame فشرده در مگابایت</string>
+    <string name="preferences_force_passthrough">عبور صدا به صورت اجباری</string>
+    <string name="preferences_force_passthrough_summary">اگر passthrough فعال باشد، آن را حتی اگر کدک صوتی توسط گیرنده AV پشتیبانی نشده باشد، اجباری کنید به جای بررسی قابلیت‌های گیرنده AV</string>
+    <string name="preferences_disable_downmix_title">غیرفعال کردن میکس استریو صدا</string>
+    <string name="preferences_disable_downmix_summary">همیشه تمام کانال‌ها را رمزگشایی کنید و اجازه دهید اندروید بسته به قابلیت خروجی صوتی، میکس را انجام دهد (این ممکن است منجر به از دست رفتن کانال‌های صوتی شود)</string>
+    <string name="preferences_enable_downmix_androidtv_title">اجباری کردن میکس استریو صدا</string>
+    <string name="preferences_enable_downmix_androidtv_summary">همیشه چندین کانال صوتی را به استریو تبدیل کن (این گزینه باید انتخاب شود اگر کانال‌های صوتی قابل شنیدن نیستند)</string>
+    <string name="preferences_allow_3rd_party_player">اجازه استفاده از سایر پخش کننده‌های ویدیو</string>
+    <string name="preferences_allow_3rd_party_player_summary">سایر برنامه‌های پخش ویدیو سازگار توسط اندروید هنگام راه‌اندازی پخش ویدیو پیشنهاد خواهند شد. توجه داشته باشید که برخی ویژگی‌ها (مانند ادامه، نشانک‌ها و غیره) کار نخواهند کرد</string>
+    <string name="preference_tv_3d_automatic_switch">فعال‌سازی سوئیچ خودکار تلویزیون 3D</string>
+    <string name="preference_tv_3d_automatic_switch_summary">از این ویژگی تنها در صورتی استفاده کنید که تلویزیون 3D شما از آن پشتیبانی کند</string>
+    <string name="preference_tv_refreshrate_switch">فعال‌سازی سوئیچ نرخ تازه‌سازی خودکار</string>
+    <string name="preference_tv_refreshrate_switch_summary">با تطبیق بهترین نرخ تازه‌سازی صفحه با نرخ فریم ویدیو، جلوه لرزش را حذف کنید (پشتیبانی دستگاه ممکن است متفاوت باشد)</string>
+    <string name="preferences_tv_refreshrate_switch_disabled">غیرفعال</string>
+    <string name="preferences_tv_refreshrate_switch_mode_selection">انتخاب حالت نمایش مطابق با فریم‌ریت ویدیو</string>
+    <string name="preferences_tv_refreshrate_switch_match_frame_rate">ویژگی تطبیق نرخ فریم اندروید 12+</string>
+    <string name="preference_remove_dolby_vision">غیرفعال سازي دالبی ویژن</string>
+    <string name="preference_cutout_short_edges">ویدیوی تمام صفحه با برش های نمایشگر</string>
+    <string name="preference_cutout_short_edges_summary">اجازه دهید ویدیو به صورت تمام صفحه در حالت افقی بر روی نمایشگرهایی که دارای بریدگی هستند، نمایش داده شود</string>
+    <string name="category_languages">زیرنویس ها</string>
+    <string name="subtitles_hide_default">پنهان کردن زیرنوس‌ها به طور پیش فرض</string>
+    <string name="subtitles_credentials_title">اعتبارنامه‌های OpenSubtitles</string>
+    <string name="subtitles_credentials_summary">لطفاً اطلاعات ورود خود به Opensubtitles را ارائه دهید تا بتوانید زیرنویس‌ها را دانلود کنید</string>
+    <string name="preferences_languages">زبان(ها) دانلود زیرنویس‌ها</string>
+    <string name="summary_list_preference_primary">زبان های مورد نظر برای دانلود را انتخاب کنید</string>
+    <string name="favSubLang_title">زبان های خواندن زیرنویس</string>
+    <string name="favSubLang_summary">زبان های مورد علاقه خود برای خواندن زیرنویس را انتخاب کنید</string>
+    <string name="favAudioLang_title">زبان ترجیحی صدا</string>
+    <string name="favAudioLang_summary">زبان صوتی مورد نظر خود را انتخاب کنید</string>
+    <string name="ui_language_title">انتخاب زبان رابط کاربری</string>
+    <string name="UiLang_title">زبان رابط کاربری</string>
+    <string name="UiLang_summary">زبان رابط کاربری Nova را انتخاب کنید، سیستم را انتخاب کنید تا از زبان پیشفرض سیستم استفاده شود</string>
+    <string name="ui_mode_title">حالت رابط کاربری</string>
+    <string name="ui_mode_summary">بین رابط تلویزیون و تلفن/تبلت یکی را انتخاب کنید</string>
+    <string name="preferences_video_about">درباره</string>
+    <string name="preferences_video_os_text">ارائه زیرنویس‌ها توسط</string>
+    <string name="preferences_video_tmdb_text">ارائه اطلاعات فیلم و سریال توسط</string>
+    <string name="preferences_video_trakt_text">ارائه رهگیری ویدیو توسط</string>
+    <string name="preferences_video_licenses">گواهینامه</string>
+    <string name="preferences_network_mobile_vpn_summary">فقط از آن با پیکربندی VPN استفاده کنید و مراقب مصرف داده‌های خود باشید.</string>
+    <string name="preferences_network_mobile_vpn_title">فعال‌سازی اشتراک‌گذاری شبکه در اتصال موبایل</string>
+    <string name="preferences_network_prefer_vpn_summary">از VPN بر روی رابط‌های شبکه محلی استفاده کنید.</string>
+    <string name="preferences_network_prefer_vpn_title">ترجیح شبکه VPN</string>
+    <string name="preferences_video_advanced">پیشرفته</string>
+    <string name="preferences_video_advanced_quit_title">تنطیمات عادی</string>
+    <string name="preferences_video_advanced_quit_summary">به تنظیمات عادی برگردید</string>
+    <string name="trakt_change">یک تغییر در API ترکت نیاز به اتصال مجدد دارد.</string>
+    <string name="enable_auto_scrap">دریافت خودکار اطلاعات ویدیوهای جدید</string>
+    <string name="enable_adult_scrap_title">استخراج ویدیوهای بزرگسال</string>
+    <string name="enable_adult_scrap_summary">فعال‌سازی بازیابی اطلاعات ویدیوهای بزرگسال (به‌طور پیش‌فرض غیرفعال است)</string>
+    <string name="locale">زبان سامانه</string>
+    <string name="scraper_language_title">زبان اطلاعات ویدیو</string>
+    <string name="scraper_language_summary">زبان مورد استفاده برای دانلود توضیحات ویدیو را تنظیم کنید</string>
+    <string name="yes">بله</string>
+    <string name="no">نه</string>
+    <string name="abort">انصراف</string>
+    <!--  Title of the video picker activity. -->
+    <string name="video_picker_title">انتخاب ویدئو</string>
+    <!-- Archos File Info -->
+    <string name="video_info_custom_search_file_hint">"\"نام فیلم\" یا \"نام سریال S01E01\""</string>
+    <string name="video_info_custom_search_show_hint">نام سریال تلویزیونی</string>
+    <string name="scrap_show_no_result">هیچ سریال متناسبی به صورت آنلاین پیدا نشد.</string>
+    <string name="notification_mode">آگهداد</string>
+    <string name="notifications_all">همه اعلان‌ها</string>
+    <string name="notifications_alerts">فقط هشدارهای نوتیفیکیشن</string>
+    <string name="notifications_none">بدون اعلان</string>
+    <string name="pref_format_mode_title">قالب</string>
+    <string name="format_fullscreen">تمام صفحه</string>
+    <string name="format_optimized">بهینه شده</string>
+    <string name="format_original">اصلی</string>
+    <string name="format_stretched">کشیده شده</string>
+    <string name="rotation_unlock">فعال‌سازی چرخش خودکار صفحه</string>
+    <string name="rotation_locked">غیر‌فعال‌سازی چرخش خودکار صفحه</string>
+    <!-- Help overlay -->
+    <string name="network_thumbnails_summary"></string>
+    <string name="network_bookmarks_summary"></string>
+    <string name="share_folders_smbv2_summary"></string>
+    <string name="connection_reset">بازنشانی</string>
+    <!-- Info dialog, not indexed file -->
+    <!-- Brightness -->
+    <!--  Nfo File parsing -->
+    <string name="sort_by_date_desc">مرتب‌سازی بر اساس تاریخ (جدیدترین اول)</string>
+    <string name="sort_by_duration_asc">مرتب سازی بر اساس مدت زمان (کوتاه ترین اول)</string>
+    <string name="sort_by_duration_desc">مرتب‌سازی بر اساس مدت زمان (ابتدا طولانی ترین)</string>
+    <string name="sort_by_genre_asc">مرتب‌سازی بر اساس ژانر (a &gt; z)</string>
+    <string name="sort_by_genre_desc">مرتب‌سازی بر اساس ژانر (z &gt; a)</string>
+    <string name="sort_by_rating_asc">مرتب‌سازی بر اساس رتبه بندی (بهترین اول)</string>
+    <string name="sort_by_date_added_desc">مرتب‌سازی بر اساس تاریخ اضافه شدن (جدیدترین اول)</string>
+    <string name="sort_by_date_added_asc">مرتب‌سازی بر اساس تاریخ اضافه شدن (قدیمی ترین اول)</string>
+    <string name="sort_by_date_played_desc">مرتب‌سازی بر اساس تاریخ پخش (جدیدترین اول)</string>
+    <string name="sort_by_date_premiered_desc">مرتب‌سازی بر اساس تاریخ انتشار (جدیدترین اول)</string>
+    <string name="sort_by_date_premiered_asc">مرتب‌سازی بر اساس تاریخ انتشار (قدیمی ترین اول)</string>
+    <string name="sort_by_date_aired_desc">مرتب‌سازی بر اساس تاریخ پخش (جدیدترین اول)</string>
+    <string name="sort_by_recently_added_episode_desc">قسمت‌های اضافه شده به تازگی در ابتدا</string>
+    <string name="sort_by_size_asc">مرتب‌سازی بر اساس اندازه (ابتدا کوچکتر)</string>
+    <string name="sort_by_size_desc">مرتب‌سازی بر اساس اندازه (اول بزرگترین)</string>
+    <string name="dec_choice_title">انتخاب رمزگشا</string>
+    <string name="dec_choice_summary">تنظیمات پیشرفته، ممکن است باعث اختلال در رمزگشایی ویدیو شود.</string>
+    <string name="dec_hw_omx">رمزگشایی سخت‌افزاری (IOMX با swbuf)</string>
+    <string name="dec_hw_omxplus">رمزگشایی سخت‌افزاری (IOMX با hwbuf)</string>
+    <string name="dec_hw_omxcodec">رمزگشایی سخت‌افزاری (OMXCodec)</string>
+    <string name="dec_hw_mediacodec">رمزگشایی سخت‌افزاری (MediaCodec)</string>
+    <string name="dec_sw">رمزگشایی نرم‌افزاری</string>
+    <string name="dec_hw">رمزگشایی سخت‌افزاری</string>
+    <string name="dec_unknown">رمزگشایی ناشناخته</string>
+    <string name="dec_any">پیشگزیده</string>
+    <string name="dec_android">پخش‌کننده رسانه‌ای اندروید</string>
+    <string name="audio_interface_choice_title">انتخاب رابط صوتی</string>
+    <string name="audio_interface_choice_summary">تنظیمات پیشرفته، ممکن است باعث خرابی در رمزگشایی صوتی شود.</string>
+    <string name="audio_interface_opensles">اجبار OpenSL ES</string>
+    <string name="audio_interface_audiotrack">اجبار Audiotrack</string>
+    <string name="audio_interface_any">منطق پیش فرض</string>
+    <string name="preferences_user_interface">رابط کاربری</string>
+    <string name="preferences_display_resume_box_summary">نمایش یا پنهان کردن دکمه ادامه آخرین ویدیو در صفحه اصلی</string>
+    <string name="preferences_display_resume_box">نمایش کادر ازسرگیری</string>
+    <string name="preferences_leanback_user_interface">رابط کاربری تلویزیون</string>
+    <string name="preferences_separate_animation_from_movies_summary">بررسی کنید که ویدیوهای انیمیشن را از فیلم ها و برنامه های تلویزیونی جدا کنید و یک ردیف انیمیشن اضافه کنید</string>
+    <string name="preferences_separate_animation_from_movies">جدا کردن انیمیشن ها از فیلم ها و نمایش های تلویزیونی</string>
+    <string name="preferences_show_watching_up_next_row_summary">علامت بزنید تا ردیفی با ویدیوهای در حال تماشا و ویدیوهای بعدی شما نشان داده شود</string>
+    <string name="preferences_show_watching_up_next_row">نشان دادن ردیف نمایش بعدی</string>
+    <string name="preferences_show_last_added_row_summary">علامت بزنید تا ردیفی با آخرین رسانه اضافه شده شما نشان داده شود</string>
+    <string name="preferences_show_last_added_row">نمایش ردیف آخرین اضافه شده</string>
+    <string name="preferences_show_last_played_row_summary">علامت بزنید تا ردیفی با آخرین رسانه پخش شده شما نمایش داده شود</string>
+    <string name="preferences_show_last_played_row">نمایش ردیف آخرین پخش شده</string>
+    <string name="preferences_reset_last_played_row">بازنشانی ردیف آخرین پخش شده</string>
+    <string name="reset_last_played_row_in_progress">در حال بازنشانی ردیف آخرین تماشا شده</string>
+    <string name="preferences_show_all_movies_row_summary">علامت بزنید تا یک ردیف با همه فیلم‌هایتان به جای ردیف دسته‌های فیلم نشان داده شود</string>
+    <string name="preferences_show_all_movies_row">نمایش ردیف همه فیلم‌ها</string>
+    <string name="preferences_movie_sort_order_summary">انتخاب ترتیب مرتب‌سازی ردیف تمام فیلم ها</string>
+    <string name="preferences_movie_sort_order_title">ترتیب مرتب‌سازی ردیف تمام فیلم ها</string>
+    <string name="preferences_show_all_tv_shows_row_summary">علامت بزنید تا یک ردیف با همه برنامه‌های تلویزیونی شما به جای ردیف دسته‌های نمایش تلویزیونی نمایش داده شود</string>
+    <string name="preferences_show_all_tv_shows_row">نمایش ردیف همه سریال‌ها</string>
+    <string name="blocklist_file_not_found">پرونده یافت نشد</string>
+    <string name="blocklist_unknown_error">ناشناخته</string>
+    <string name="share_path">مسیر</string>
+    <string name="category_trakt">Trakt</string>
+    <string name="trakt_signin">ورود به سیستم</string>
+    <string name="trakt_list_signin">ورود به حساب Trakt</string>
+    <string name="trakt_signin_summary_logged" tools:ignore="UnusedResources">وارد شده</string>
+    <string name="trakt_signin_summary_logged_error">خطا در احراز هویت</string>
+    <string name="trakt_signin_summary">وارد حساب نشده است</string>
+    <string name="trakt_relog_description">مشکلی در Trakt شناسایی شده است و اعتبارنامه باید بازنشانی شود، لطفاً دوباره وارد شوید.</string>
+    <string name="trakt_signin_dialog_title">ورود به سیستم</string>
+    <string name="trakt_signin_title">ورود به سیستم</string>
+    <string name="trakt_wipe_title">از Trakt.tv خارج شوید</string>
+    <string name="trakt_live_scrobbling_title">رهگیری زنده</string>
+    <string name="trakt_live_scrobbling_summary">ویدیوهای در حال تماشا را در Trakt به اشتراک بگذارید</string>
+    <!-- Combined sign-in summary: "Signed in · <sync status>" -->
+    <string name="show_all">همه ویدیوها</string>
+    <string name="search_results">دستاورد جستجو</string>
+    <string name="leanback_weblinks_header">پیوندها</string>
+    <string name="system">سامانه</string>
+    <string name="add_to_list">افزودن به فهرست</string>
+    <string name="loading">در دریافت…</string>
+</resources>

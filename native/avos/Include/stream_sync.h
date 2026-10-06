@@ -1,0 +1,49 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef _STREAM_SYNC_H
+#define _STREAM_SYNC_H
+
+int  stream_sync_init( STREAM *s, int time );
+int  stream_sync_restart( STREAM *s );
+int  stream_sync_restart_with_mode2_frontier( STREAM *s );
+int  stream_sync_restart_after_pause( STREAM *s );
+void stream_sync_anchor_reset( STREAM *s );
+void stream_sync_anchor_snapshot( STREAM *s, int *sink_ref_time, int *vid_ref_time );
+int  stream_sync_anchor_get_sink( STREAM *s );
+int  stream_sync_anchor_get_video( STREAM *s );
+int  stream_sync_anchor_publish( STREAM *s, int sink_ref_time, int vid_ref_time,
+	int only_if_unset, int refresh_sink );
+int  stream_sync_anchor_seed_from_sink( STREAM *s, int vid_ref_time );
+int  stream_sync_anchor_adjust_sink( STREAM *s, int delta );
+void stream_sync_mode2_heard_reset( STREAM *s, int clear_frontier );
+void stream_sync_mode2_heard_frontier_arm( STREAM *s );
+int  stream_sync_mode2_heard_frontier_pending( STREAM *s );
+void stream_sync_compressed_unit_commit( STREAM *s, int encoded_bytes,
+	int logical_samples, int logical_sample_rate, int codec, int framing );
+void stream_sync_compressed_shadow_observe( STREAM *s );
+int  stream_sync_mode2_dynamic_active( STREAM *s );
+int  stream_sync_av_delay( STREAM *s );
+int  stream_get_atempo_delay( STREAM *s );
+void stream_sync_pcm_reanchor_arm( STREAM *s, int passthrough_active );
+void stream_sync_pcm_output_reset( STREAM *s );
+int  stream_sync_pcm_reanchor_update( STREAM *s, int passthrough_active );
+int  stream_sync_pcm_audio_lead_gate( STREAM *s, int ac3_recoding );
+int  stream_sync_audio( STREAM *s, int audio_time );
+int  stream_sync_video( STREAM *s, int video_time );
+void stream_sync( STREAM *s );
+
+#endif

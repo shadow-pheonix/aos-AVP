@@ -1,0 +1,1426 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "stream_fd.h"
+#include <stdio.h>
+#include <inttypes.h>
+
+#include "avos_common.h"
+#include "avos_common_priv.h"
+#include "avos_mp.h"
+#include "avos_mp_metadata.h"
+#include "avos_mp_priv.h"
+#include "astdlib.h"
+#include "debug.h"
+#include "global.h"
+#include "file_type.h"
+#include "athread.h"
+#include "audio_interface.h"
+#include "stream_config.h"
+#include "device_config.h"
+
+#define UPNP_FUSE_TO_HTTP
+
+#define DBG if(Debug[DBG_VIDEO_PLAYER] || Debug[DBG_AUDIO_PLAYER])
+#define DBG2 if((Debug[DBG_VIDEO_PLAYER] > 1) || (Debug[DBG_AUDIO_PLAYER] > 1))
+
+#define MPLOG(fmt, ...) serprintf("%p|%s: " fmt "\n", mp, __FUNCTION__, ##__VA_ARGS__)
+#define MPLOGV DBG MPLOG
+
+enum {
+	ASYNC_CMD_WAIT = 0,
+	ASYNC_CMD_OPEN,
+	ASYNC_CMD_SEEK,
+	ASYNC_CMD_START,
+	ASYNC_CMD_PAUSE,
+	ASYNC_CMD_SET_AUDIO_TRACK,
+	ASYNC_CMD_REFRESH_AUDIO_OUTPUT,
+	ASYNC_CMD_CHECK_SUBTITLES,
+	ASYNC_CMD_SET_SUBTITLE_TRACK,
+	ASYNC_CMD_SET_SUBTITLE_DELAY,
+	ASYNC_CMD_SET_SUBTITLE_RATIO,
+	ASYNC_CMD_SET_AUDIO_FILTER,
+	ASYNC_CMD_SET_AV_DELAY,
+	ASYNC_CMD_SET_AV_SPEED,
+	ASYNC_CMD_EXIT,
+};
+
+#define ASYNC_CONTROL_QUEUE_SIZE 16
+
+typedef struct async_cmd {
+	int id;
+	int arg;
+	int arg2;
+	float farg;
+	uint32_t generation;
+} async_cmd_t;
+
+struct avos_mp {
+	avos_mp_event_cb_t event_cb;
+
+	int fd;
+
+	void *surface_handle;
+	void *priv;
+
+	STREAM_URL src;
+	int type;
+	int etype;
+	int islooping;
+	int starttime;
+
+	struct {
+		pthread_t thread;
+		pthread_mutex_t mtx;
+		pthread_cond_t cond;
+		async_cmd_t cur_cmd;
+		async_cmd_t next_cmd;
+		async_cmd_t control_queue[ASYNC_CONTROL_QUEUE_SIZE];
+		int control_head;
+		int control_count;
+		uint32_t speed_generation;
+		uint32_t audio_track_generation;
+		uint32_t subtitle_track_generation;
+		int closing;
+		int destroying;
+		unsigned int users;
+		int open_pending;
+		int open_result;
+		uint32_t open_generation;
+		int pending_transport;
+		uint32_t transport_generation;
+	} async;
+
+	struct {
+		int isplaying;
+		int duration;
+		int pos;
+	} last;
+
+	metadata_buffer_t *metadata_buffer;
+	pthread_mutex_t metadata_mtx;
+	pthread_mutex_t close_mtx;
+	void *media;
+};
+
+avos_mp_video_t *avos_mp_video_create();
+avos_mp_audio_t *avos_mp_audio_create();
+int avos_mp_video_destroy(avos_mp_video_t **video);
+int avos_mp_audio_destroy(avos_mp_audio_t **audio);
+
+int avos_mp_video_open(avos_mp_t *mp, avos_mp_video_t *video, STREAM_URL *src, int etype, void *surface_handle, int starttime);
+int avos_mp_video_report_open_error(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_audio_open(avos_mp_t *mp, avos_mp_audio_t *audio, STREAM_URL *src, int etype);
+int avos_mp_video_close(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_audio_close(avos_mp_t *mp, avos_mp_audio_t *audio);
+
+int avos_mp_video_abort(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_video_start(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_video_pause(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_video_isplaying(avos_mp_t *mp, avos_mp_video_t *video, int *ret);
+int avos_mp_video_seek(avos_mp_t *mp, avos_mp_video_t *video, uint32_t msec);
+void avos_mp_video_supersede_seek_preview(avos_mp_video_t *video);
+int avos_mp_video_getpos(avos_mp_t *mp, avos_mp_video_t *video, uint32_t *ret);
+int avos_mp_video_getduration(avos_mp_t *mp, avos_mp_video_t *video, uint32_t *ret);
+int avos_mp_video_getaudiosessionid(avos_mp_t *mp, avos_mp_video_t *video, uint32_t *ret);
+int avos_mp_video_setaudiotrack(avos_mp_t *mp, avos_mp_video_t *video, int track, int *ret);
+int avos_mp_video_refreshaudiooutput(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_video_checksubtitles(avos_mp_t *mp, avos_mp_video_t *video);
+int avos_mp_video_setsubtitletrack(avos_mp_t *mp, avos_mp_video_t *video, int track, int *ret);
+int avos_mp_video_setsubtitledelay(avos_mp_t *mp, avos_mp_video_t *video, int delay);
+int avos_mp_video_setsubtitleratio(avos_mp_t *mp, avos_mp_video_t *video, uint32_t n, uint32_t d);
+int avos_mp_video_setaudiofilter(avos_mp_t *mp, avos_mp_video_t *video, int n, int night_on);
+int avos_mp_video_setavdelay(avos_mp_t *mp, avos_mp_video_t *video, int delay);
+int avos_mp_video_setavspeed(avos_mp_t *mp, avos_mp_video_t *video, float speed);
+
+int avos_mp_audio_abort(avos_mp_t *mp, avos_mp_audio_t *audio);
+int avos_mp_audio_start(avos_mp_t *mp, avos_mp_audio_t *audio);
+int avos_mp_audio_pause(avos_mp_t *mp, avos_mp_audio_t *audio);
+int avos_mp_audio_isplaying(avos_mp_t *mp, avos_mp_audio_t *audio, int *ret);
+int avos_mp_audio_seek(avos_mp_t *mp, avos_mp_audio_t *audio, uint32_t msec);
+int avos_mp_audio_getpos(avos_mp_t *mp, avos_mp_audio_t *audio, uint32_t *ret);
+int avos_mp_audio_getduration(avos_mp_t *mp, avos_mp_audio_t *audio, uint32_t *ret);
+int avos_mp_audio_getaudiosessionid(avos_mp_t *mp, avos_mp_audio_t *audio, uint32_t *ret);
+int avos_mp_audio_setnextrack(avos_mp_t *mp, avos_mp_audio_t *audio, const char *url);
+
+// only return in case or error
+#define AVOS_MP_COMMON(fn, _mp, ...) \
+do { \
+	if (!(_mp)->media || ((_mp)->type != TYPE_VID && (_mp)->type != TYPE_AUD)) \
+		return AVOS_ERR_CRITICAL; \
+	if ((_mp)->type == TYPE_VID) {\
+		if (avos_mp_video_##fn((_mp), (avos_mp_video_t *)(_mp)->media, ##__VA_ARGS__) != AVOS_ERR_OK) \
+			return AVOS_ERR; \
+	} else { \
+		if (avos_mp_audio_##fn((_mp), (avos_mp_audio_t *)(_mp)->media, ##__VA_ARGS__) != AVOS_ERR_OK) \
+			return AVOS_ERR; \
+	} \
+} while(0)
+
+#define AVOS_MP_VIDEO(fn, _mp, ...) \
+do { \
+	if (!(_mp)->media || (_mp)->type != TYPE_VID) \
+		return AVOS_ERR_CRITICAL; \
+	if (avos_mp_video_##fn((_mp), (avos_mp_video_t *)(_mp)->media, ##__VA_ARGS__) != AVOS_ERR_OK) \
+		return AVOS_ERR; \
+} while(0)
+
+#define AVOS_MP_AUDIO(fn, _mp, ...) \
+do { \
+	if (!(_mp)->media || (_mp)->type != TYPE_AUD) \
+		return AVOS_ERR_CRITICAL; \
+	if (avos_mp_audio_##fn((_mp), (avos_mp_audio_t *)(_mp)->media, ##__VA_ARGS__) != AVOS_ERR_OK) \
+		return AVOS_ERR; \
+} while(0)
+
+avos_mp_video_t *avos_mp_getvideo(avos_mp_t *mp)
+{
+	return (avos_mp_video_t *)mp->media;
+}
+
+avos_mp_audio_t *avos_mp_getaudio(avos_mp_t *mp)
+{
+	return (avos_mp_audio_t *)mp->media;
+}
+
+int avos_mp_fillmetadata(avos_mp_t *mp, int type, uint64_t size, ID3_TAG *id3_tag, AV_PROPERTIES *av, const char *mimetype, int duration, int seekable, int pauseable, int decoder)
+{
+#define ADD_STR(_id, _str) do { \
+	if (avos_metadata_append_str(buffer, (_id), (_str)) == -1) \
+		goto quit; \
+} while(0)
+#define ADD_INT(_id, _arg) do { \
+	if (avos_metadata_append_int(buffer, (_id), (_arg)) == -1) \
+		goto quit; \
+} while(0)
+#define ADD_INT64(_id, _arg) do { \
+	if (avos_metadata_append_int64(buffer, (_id), (_arg)) == -1) \
+		goto quit; \
+} while(0)
+#define ADD_BOOL(_id, _arg) do { \
+	if (avos_metadata_append_bool(buffer, (_id), (_arg)) == -1) \
+		goto quit; \
+} while(0)
+	const char *token;
+	int i, gap_key, changed = 0;
+	metadata_buffer_t *buffer;
+
+	MPLOGV();
+
+	buffer = mp->metadata_buffer;
+	if (!buffer)
+		return -1;
+
+	pthread_mutex_lock(&mp->metadata_mtx);
+	avos_metadata_write_begin(buffer);
+
+	if (size > 0)
+		ADD_INT64(AVOS_MP_METADATA_FILE_SIZE, size);
+
+	AUDIO_PROPERTIES *audiop = &av->audio[0];
+	VIDEO_PROPERTIES *videop = &av->video[0];
+	if (id3_tag && id3_tag->valid ) {
+		ADD_INT(AVOS_MP_METADATA_CD_TRACK_NUM, id3_tag->track);
+		ADD_STR(AVOS_MP_METADATA_ALBUM, id3_tag->album);
+		ADD_STR(AVOS_MP_METADATA_ARTIST,id3_tag->artist);
+		ADD_STR(AVOS_MP_METADATA_COMPOSER, id3_tag->composer);
+		ADD_STR(AVOS_MP_METADATA_AUTHOR, id3_tag->author);
+		ADD_STR(AVOS_MP_METADATA_GENRE, id3_tag->genre);
+		ADD_STR(AVOS_MP_METADATA_TITLE, id3_tag->title);
+		ADD_STR(AVOS_MP_METADATA_DATE, id3_tag->year);
+		ADD_BOOL(AVOS_MP_METADATA_DRM_CRIPPLED, 0);
+	}
+
+	if (duration > 0)
+		ADD_INT(AVOS_MP_METADATA_DURATION, duration);
+	ADD_BOOL(AVOS_MP_METADATA_PAUSE_AVAILABLE, pauseable);
+	ADD_BOOL(AVOS_MP_METADATA_SEEK_BACKWARD_AVAILABLE, seekable);
+	ADD_BOOL(AVOS_MP_METADATA_SEEK_FORWARD_AVAILABLE, seekable);
+	ADD_BOOL(AVOS_MP_METADATA_SEEK_AVAILABLE, seekable);
+	if (mimetype)
+		ADD_STR(AVOS_MP_METADATA_MIME_TYPE, mimetype);
+	if (audiop->samplesPerSec > 0)
+		ADD_INT(AVOS_MP_METADATA_AUDIO_SAMPLE_RATE, audiop->samplesPerSec);
+	if (audiop->bytesPerSec > 0)
+		ADD_INT(AVOS_MP_METADATA_AUDIO_BIT_RATE, (audiop->bytesPerSec * 8));
+	if (audiop->format > 0)
+		ADD_INT(AVOS_MP_METADATA_AUDIO_CODEC, audiop->format);
+
+	if (videop->bytesPerSec > 0)
+		ADD_INT(AVOS_MP_METADATA_VIDEO_BIT_RATE, (videop->bytesPerSec * 8));
+	if (videop->framesPerSec > 0)
+		ADD_INT(AVOS_MP_METADATA_VIDEOFRAME_RATE, videop->framesPerSec);
+	if (videop->fourcc > 0)
+		ADD_INT(AVOS_MP_METADATA_VIDEO_CODEC, videop->fourcc);
+	if (videop->width > 0)
+		ADD_INT(AVOS_MP_METADATA_VIDEO_WIDTH, videop->width);
+	if (videop->height > 0)
+		ADD_INT(AVOS_MP_METADATA_VIDEO_HEIGHT, videop->height);
+
+	if (type == TYPE_VID && av && av->vs_max > 0) {
+		ADD_INT(AVOS_MP_METADATA_NB_VIDEO_TRACK, av->vs_max);
+
+		gap_key = AVOS_MP_METADATA_VIDEO_TRACK;
+		token = video_get_fourcc_name(videop);
+		ADD_STR(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_FORMAT, token);
+
+		if (videop->width > 0 && videop->height > 0) {
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_WIDTH, videop->width);
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_HEIGHT, videop->height);
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_ASPECT_N, videop->aspect_n);
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_ASPECT_D, videop->aspect_d);
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_PIXEL_FORMAT, videop->colorspace);
+		}
+
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_PROFILE, videop->profile);
+
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_LEVEL, videop->level);
+
+		if (videop->bytesPerSec > 0)
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_BIT_RATE, videop->bytesPerSec / 125);
+
+		if (videop->framesPerSec > 0)
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_FPS, videop->framesPerSec);
+
+		if (videop->rate > 0)
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_FPS_RATE, videop->rate);
+
+		if (videop->scale > 0)
+			ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_FPS_SCALE, videop->scale);
+
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_S3DMODE, videop->stereo_mode);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_DECODER, decoder);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_COLOR_TRC, videop->color_trc);
+	}
+	if (av && type == TYPE_AUD)
+		av->as_max = 1;
+	if (av && av->as_max >= 0) {
+		ADD_INT(AVOS_MP_METADATA_NB_AUDIO_TRACK, av->as_max);
+		for (i = 0; i < av->as_max; ++i) {
+			audiop = &av->audio[i];
+			gap_key = AVOS_MP_METADATA_AUDIO_TRACK + i * AVOS_MP_METADATA_AUDIO_TRACK_MAX;
+
+			ADD_STR(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_NAME, audiop->name);
+
+			if (audiop->format == WAVE_FORMAT_DTS)
+				token = "DTS";
+			else
+				token = audio_get_format_name(audiop);
+			ADD_STR(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_FORMAT, token);
+
+			if (audiop->bytesPerSec > 0)
+				ADD_INT(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_BIT_RATE, audiop->bytesPerSec / 125);
+
+			if (audiop->samplesPerSec > 0)
+				ADD_INT(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_SAMPLE_RATE, audiop->samplesPerSec);
+
+			token = audio_get_channel_layout_name(audiop->channels);
+			ADD_STR(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_CHANNELS, token);
+
+			ADD_BOOL(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_VBR, audiop->vbr);
+
+			ADD_STR(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_LANGUAGE, audiop->lang);
+			ADD_INT(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_DISPOSITION, audiop->disposition);
+
+			int supported = 0;
+			STREAM_DEC_AUDIO *dec = stream_get_audio_dec( audiop );
+			if( dec ) {
+				supported = 1;
+				if( dec->is_supported ) {
+					supported = dec->is_supported( audiop ) ? 1 : 0;
+				}
+			}
+			ADD_BOOL(gap_key + AVOS_MP_METADATA_AUDIO_TRACK_SUPPORTED, supported);
+		}
+
+		int current_audio = -1;
+		if (av->as >= 0 && av->as < av->as_max)
+			current_audio = av->audio[av->as].valid ? av->as : -1;
+		ADD_INT(AVOS_MP_METADATA_CURRENT_AUDIO_TRACK, current_audio);
+	}
+	if (type == TYPE_VID && av && av->subs_max >= 0) {
+		ADD_INT(AVOS_MP_METADATA_NB_SUBTITLE_TRACK, av->subs_max);
+		for (i = 0; i < av->subs_max; ++i) {
+			gap_key = AVOS_MP_METADATA_SUBTITLE_TRACK + i * AVOS_MP_METADATA_SUBTITLE_TRACK_MAX;
+			ADD_STR(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_NAME, av->sub[i].name);
+			ADD_STR(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_PATH, av->sub[i].path);
+			ADD_BOOL(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_IS_GFX, av->sub[i].gfx);
+			ADD_INT(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_FORMAT, av->sub[i].format);
+			ADD_STR(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_LANGUAGE, av->sub[i].lang);
+			serprintf("avos_mp_fillmetadata: sub[%d] disp=%d\n", i, av->sub[i].disposition);
+			ADD_INT(gap_key + AVOS_MP_METADATA_SUBTITLE_TRACK_DISPOSITION, av->sub[i].disposition);
+
+		}
+
+		int current_subitle = -1;
+		if (av->subs >= 0 && av->subs < av->subs_max)
+			current_subitle = av->sub[av->subs].valid ? av->subs : -1;
+		ADD_INT(AVOS_MP_METADATA_CURRENT_SUBTITLE_TRACK, current_subitle);
+	}
+
+quit:
+	changed = avos_metadata_write_end(buffer);
+	pthread_mutex_unlock(&mp->metadata_mtx);
+	return changed;
+}
+
+void avos_mp_sendevent_data(avos_mp_t *mp, int what, int arg1, int arg2, avos_msg_t *data)
+{
+	if (mp->event_cb)
+		mp->event_cb(mp, what, arg1, arg2, data);
+}
+
+void avos_mp_sendevent_msg(avos_mp_t *mp, int what, int arg1, int arg2, const char *str)
+{
+	avos_msg_t *msg = NULL;
+	if (str)
+		msg = avos_msg_new_str(0, str);
+	avos_mp_sendevent_data(mp, what, arg1, arg2, msg);
+}
+
+void avos_mp_sendevent(avos_mp_t *mp, int what, int arg1, int arg2)
+{
+	return avos_mp_sendevent_data(mp, what, arg1, arg2, NULL);
+}
+
+static int avos_mp_open_common(avos_mp_t *mp)
+{
+	// Publication and cancellation share the command lock. A close that wins
+	// before publication cancels the open; one that wins afterwards can abort it.
+	pthread_mutex_lock(&mp->async.mtx);
+	if (mp->async.closing || mp->media) {
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_CRITICAL;
+	}
+	if ((mp->type == TYPE_NONE || mp->type == TYPE_UNKNOWN) &&
+	    (!strncmp(mp->src.url, "http://", 7) || !strncmp(mp->src.url, "https://", 8))) {
+		mp->type = TYPE_VID;
+		mp->etype = ETYPE_MKV;
+	}
+	if (mp->type == TYPE_VID)
+		mp->media = avos_mp_video_create();
+	else if (mp->type == TYPE_AUD)
+		mp->media = avos_mp_audio_create();
+	void *media = mp->media;
+	pthread_mutex_unlock(&mp->async.mtx);
+	if (!media)
+		return AVOS_ERR;
+	if (mp->type == TYPE_VID)
+		return avos_mp_video_open(mp, media, &mp->src, mp->etype,
+		    mp->surface_handle, mp->starttime);
+	return avos_mp_audio_open(mp, media, &mp->src, mp->etype);
+}
+
+static int avos_mp_seek_common(avos_mp_t *mp, uint32_t msec)
+{
+	MPLOGV("%d", msec);
+	AVOS_MP_COMMON(seek, mp, msec);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_transport_common(avos_mp_t *mp, int command)
+{
+	if (!mp->media || (mp->type != TYPE_VID && mp->type != TYPE_AUD))
+		return AVOS_ERR_CRITICAL;
+
+	if (mp->type == TYPE_VID) {
+		int ret = command == ASYNC_CMD_START ?
+			avos_mp_video_start(mp, (avos_mp_video_t *)mp->media) :
+			avos_mp_video_pause(mp, (avos_mp_video_t *)mp->media);
+		return ret == AVOS_ERR_OK ? AVOS_ERR_OK : AVOS_ERR;
+	}
+
+	int ret = command == ASYNC_CMD_START ?
+		avos_mp_audio_start(mp, (avos_mp_audio_t *)mp->media) :
+		avos_mp_audio_pause(mp, (avos_mp_audio_t *)mp->media);
+	return ret == AVOS_ERR_OK ? AVOS_ERR_OK : AVOS_ERR;
+}
+
+static int avos_mp_transport_isplaying(avos_mp_t *mp, int *isplaying)
+{
+	if (!mp->media || (mp->type != TYPE_VID && mp->type != TYPE_AUD))
+		return AVOS_ERR_CRITICAL;
+
+	if (mp->type == TYPE_VID)
+		return avos_mp_video_isplaying(mp, (avos_mp_video_t *)mp->media, isplaying);
+
+	return avos_mp_audio_isplaying(mp, (avos_mp_audio_t *)mp->media, isplaying);
+}
+
+static void async_transport_complete(avos_mp_t *mp, int command,
+		uint32_t generation, int command_ret)
+{
+	int actual_isplaying = command == ASYNC_CMD_PAUSE;
+	int actual_ret = AVOS_ERR_OK;
+
+	if (command_ret != AVOS_ERR_OK)
+		actual_ret = avos_mp_transport_isplaying(mp, &actual_isplaying);
+
+	pthread_mutex_lock(&mp->async.mtx);
+	int is_latest = generation == mp->async.transport_generation;
+	if (is_latest) {
+		if (command_ret == AVOS_ERR_OK)
+			mp->last.isplaying = command == ASYNC_CMD_START;
+		else if (actual_ret == AVOS_ERR_OK)
+			mp->last.isplaying = actual_isplaying;
+		// If the actual state cannot be queried, restore the state expected
+		// before the failed transition instead of leaving a false confirmation.
+		else
+			mp->last.isplaying = command == ASYNC_CMD_PAUSE;
+	}
+	pthread_mutex_unlock(&mp->async.mtx);
+
+	if (command_ret != AVOS_ERR_OK) {
+		MPLOG("async transport command %d failed%s", command,
+		    is_latest ? "" : " (superseded)");
+		if (is_latest)
+			avos_mp_sendevent(mp, MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, 0);
+	}
+}
+
+static int async_has_pending_locked(avos_mp_t *mp)
+{
+	return mp->async.next_cmd.id != ASYNC_CMD_WAIT ||
+	       mp->async.control_count != 0 ||
+	       mp->async.pending_transport != ASYNC_CMD_WAIT;
+}
+
+static int async_control_add(avos_mp_t *mp, int id, int arg, int arg2, float farg)
+{
+	pthread_mutex_lock(&mp->async.mtx);
+	if (!mp->media || mp->type != TYPE_VID || mp->async.closing ||
+	    mp->async.cur_cmd.id == ASYNC_CMD_EXIT ||
+	    mp->async.next_cmd.id == ASYNC_CMD_EXIT) {
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_CRITICAL;
+	}
+	if (id == ASYNC_CMD_SET_AV_SPEED)
+		mp->async.speed_generation++;
+	else if (id == ASYNC_CMD_SET_AUDIO_TRACK)
+		mp->async.audio_track_generation++;
+	else if (id == ASYNC_CMD_SET_SUBTITLE_TRACK)
+		mp->async.subtitle_track_generation++;
+
+	// Keep only the newest pending request of each control type. Move an
+	// updated request to the tail so ordering between different controls still
+	// follows the caller's latest sequence.
+	int i;
+	for (i = 0; i < mp->async.control_count; ++i) {
+		int index = (mp->async.control_head + i) % ASYNC_CONTROL_QUEUE_SIZE;
+		if (mp->async.control_queue[index].id == id) {
+			int j;
+			for (j = i; j < mp->async.control_count - 1; ++j) {
+				int dst = (mp->async.control_head + j) % ASYNC_CONTROL_QUEUE_SIZE;
+				int src = (mp->async.control_head + j + 1) % ASYNC_CONTROL_QUEUE_SIZE;
+				mp->async.control_queue[dst] = mp->async.control_queue[src];
+			}
+			mp->async.control_count--;
+			break;
+		}
+	}
+
+	if (mp->async.control_count == ASYNC_CONTROL_QUEUE_SIZE) {
+		pthread_mutex_unlock(&mp->async.mtx);
+		MPLOG("async control queue full for command %d", id);
+		return AVOS_ERR;
+	}
+
+	int tail = (mp->async.control_head + mp->async.control_count) % ASYNC_CONTROL_QUEUE_SIZE;
+	mp->async.control_queue[tail].id = id;
+	mp->async.control_queue[tail].arg = arg;
+	mp->async.control_queue[tail].arg2 = arg2;
+	mp->async.control_queue[tail].farg = farg;
+	if (id == ASYNC_CMD_SET_AV_SPEED)
+		mp->async.control_queue[tail].generation = mp->async.speed_generation;
+	else if (id == ASYNC_CMD_SET_AUDIO_TRACK)
+		mp->async.control_queue[tail].generation = mp->async.audio_track_generation;
+	else if (id == ASYNC_CMD_SET_SUBTITLE_TRACK)
+		mp->async.control_queue[tail].generation = mp->async.subtitle_track_generation;
+	else
+		mp->async.control_queue[tail].generation = 0;
+	mp->async.control_count++;
+	pthread_cond_broadcast(&mp->async.cond);
+	pthread_mutex_unlock(&mp->async.mtx);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_control_common(avos_mp_t *mp, const async_cmd_t *command,
+		int *operation_result)
+{
+	if (!mp->media || mp->type != TYPE_VID)
+		return AVOS_ERR_CRITICAL;
+
+	avos_mp_video_t *video = (avos_mp_video_t *)mp->media;
+	int ignored_result = 0;
+	if (!operation_result)
+		operation_result = &ignored_result;
+
+	switch (command->id) {
+		case ASYNC_CMD_SET_AUDIO_TRACK:
+			return avos_mp_video_setaudiotrack(mp, video, command->arg,
+			    operation_result);
+		case ASYNC_CMD_REFRESH_AUDIO_OUTPUT:
+			return avos_mp_video_refreshaudiooutput(mp, video);
+		case ASYNC_CMD_CHECK_SUBTITLES:
+			return avos_mp_video_checksubtitles(mp, video);
+		case ASYNC_CMD_SET_SUBTITLE_TRACK:
+			return avos_mp_video_setsubtitletrack(mp, video, command->arg,
+			    operation_result);
+		case ASYNC_CMD_SET_SUBTITLE_DELAY:
+			return avos_mp_video_setsubtitledelay(mp, video, command->arg);
+		case ASYNC_CMD_SET_SUBTITLE_RATIO:
+			return avos_mp_video_setsubtitleratio(mp, video,
+			    (uint32_t)command->arg, (uint32_t)command->arg2);
+		case ASYNC_CMD_SET_AUDIO_FILTER:
+			return avos_mp_video_setaudiofilter(mp, video,
+			    command->arg, command->arg2);
+		case ASYNC_CMD_SET_AV_DELAY:
+			return avos_mp_video_setavdelay(mp, video, command->arg);
+		case ASYNC_CMD_SET_AV_SPEED:
+			return avos_mp_video_setavspeed(mp, video, command->farg);
+		default:
+			return AVOS_ERR_CRITICAL;
+	}
+}
+
+static void async_control_complete(avos_mp_t *mp, const async_cmd_t *command,
+		int command_ret, int operation_result)
+{
+	if (command->id == ASYNC_CMD_SET_AUDIO_TRACK ||
+	    command->id == ASYNC_CMD_SET_SUBTITLE_TRACK) {
+		pthread_mutex_lock(&mp->async.mtx);
+		int is_latest = command->generation ==
+			(command->id == ASYNC_CMD_SET_AUDIO_TRACK ?
+			 mp->async.audio_track_generation :
+			 mp->async.subtitle_track_generation);
+		pthread_mutex_unlock(&mp->async.mtx);
+		if (!is_latest) {
+			MPLOG("async track command %d request %d superseded",
+			    command->id, command->arg);
+			return;
+		}
+
+		int succeeded = command_ret == AVOS_ERR_OK && operation_result;
+		int info;
+		if (command->id == ASYNC_CMD_SET_AUDIO_TRACK)
+			info = succeeded ? MEDIA_INFO_AUDIO_TRACK_APPLIED :
+				MEDIA_INFO_AUDIO_TRACK_FAILED;
+		else
+			info = succeeded ? MEDIA_INFO_SUBTITLE_TRACK_APPLIED :
+				MEDIA_INFO_SUBTITLE_TRACK_FAILED;
+		if (!succeeded)
+			MPLOG("async track command %d failed track=%d ret=%d result=%d",
+			    command->id, command->arg, command_ret, operation_result);
+		avos_mp_sendevent(mp, MEDIA_INFO, info, command->arg);
+		return;
+	}
+
+	if (command->id == ASYNC_CMD_SET_AV_SPEED) {
+		pthread_mutex_lock(&mp->async.mtx);
+		int is_latest = command->generation == mp->async.speed_generation;
+		pthread_mutex_unlock(&mp->async.mtx);
+		if (!is_latest) {
+			MPLOG("async speed request %.3f superseded", command->farg);
+			return;
+		}
+		int applied_milli = (int)(audio_interface_get_audio_speed() * 1000.0f + 0.5f);
+		MPLOG("async speed requested=%.3f applied=%.3f ret=%d", command->farg,
+		    applied_milli / 1000.0f, command_ret);
+		avos_mp_sendevent(mp, MEDIA_INFO, MEDIA_INFO_AUDIO_SPEED_APPLIED,
+		    applied_milli);
+		return;
+	}
+
+	if (command->id == ASYNC_CMD_CHECK_SUBTITLES) {
+		if (command_ret != AVOS_ERR_OK)
+			MPLOG("async control command %d failed ret=%d",
+			    command->id, command_ret);
+		avos_mp_sendevent(mp, MEDIA_INFO, MEDIA_INFO_METADATA_UPDATE, 0);
+		return;
+	}
+
+	if (command_ret != AVOS_ERR_OK)
+		MPLOG("async control command %d failed ret=%d", command->id, command_ret);
+}
+
+static void *async_thread(void *ctx)
+{
+	int loop = 1;
+	avos_mp_t *mp = (avos_mp_t *) ctx;
+
+	while (loop) {
+		pthread_mutex_lock(&mp->async.mtx);
+		if (mp->async.cur_cmd.id == ASYNC_CMD_SEEK) {
+			avos_mp_sendevent(mp, MEDIA_SEEK_COMPLETE,
+			    mp->async.next_cmd.id == ASYNC_CMD_SEEK ? 1 /* seek pending */ : 0, 0);
+		}
+		if (!async_has_pending_locked(mp)) {
+			// signal async thread is done for now
+			mp->async.cur_cmd.id = ASYNC_CMD_WAIT;
+			mp->async.cur_cmd.arg = 0;
+			pthread_cond_broadcast(&mp->async.cond);
+			// wait for a new cmd
+			while (!async_has_pending_locked(mp))
+				pthread_cond_wait(&mp->async.cond, &mp->async.mtx);
+		}
+		if (mp->async.next_cmd.id != ASYNC_CMD_WAIT) {
+			// Seeks and lifecycle commands take precedence. The latest requested
+			// transport state is retained and applied immediately afterwards.
+			mp->async.cur_cmd = mp->async.next_cmd;
+			mp->async.next_cmd.id = ASYNC_CMD_WAIT;
+			mp->async.next_cmd.arg = 0;
+		} else if (mp->async.control_count != 0) {
+			mp->async.cur_cmd = mp->async.control_queue[mp->async.control_head];
+			mp->async.control_head =
+				(mp->async.control_head + 1) % ASYNC_CONTROL_QUEUE_SIZE;
+			mp->async.control_count--;
+		} else {
+			mp->async.cur_cmd.id = mp->async.pending_transport;
+			mp->async.cur_cmd.arg = (int)mp->async.transport_generation;
+			mp->async.pending_transport = ASYNC_CMD_WAIT;
+		}
+		async_cmd_t command = mp->async.cur_cmd;
+		pthread_mutex_unlock(&mp->async.mtx);
+		switch (command.id) {
+			case ASYNC_CMD_OPEN: {
+				int ret = avos_mp_open_common(mp);
+				pthread_mutex_lock(&mp->async.mtx);
+				mp->async.open_result = ret;
+				mp->async.open_pending = 0;
+				if (!mp->async.closing) {
+					if (ret == AVOS_ERR_OK) {
+						if (command.arg)
+							avos_mp_sendevent(mp, MEDIA_PREPARED, 0, 0);
+					} else {
+						// Preserve detailed errors for both prepare APIs, without
+						// following them with a generic error or a prepared event.
+						int handled = mp->type == TYPE_VID && mp->media &&
+						    avos_mp_video_report_open_error(mp, mp->media);
+						if (!handled && command.arg)
+							avos_mp_sendevent(mp, MEDIA_ERROR, 0, 0);
+					}
+				}
+				pthread_cond_broadcast(&mp->async.cond);
+				pthread_mutex_unlock(&mp->async.mtx);
+				break;
+			}
+			case ASYNC_CMD_SEEK:
+				avos_mp_seek_common(mp, command.arg);
+				break;
+			case ASYNC_CMD_START:
+			case ASYNC_CMD_PAUSE: {
+				int ret = avos_mp_transport_common(mp, command.id);
+				async_transport_complete(mp, command.id,
+				    (uint32_t)command.arg, ret);
+				break;
+			}
+			case ASYNC_CMD_SET_AUDIO_TRACK:
+			case ASYNC_CMD_REFRESH_AUDIO_OUTPUT:
+			case ASYNC_CMD_CHECK_SUBTITLES:
+			case ASYNC_CMD_SET_SUBTITLE_TRACK:
+			case ASYNC_CMD_SET_SUBTITLE_DELAY:
+			case ASYNC_CMD_SET_SUBTITLE_RATIO:
+			case ASYNC_CMD_SET_AUDIO_FILTER:
+			case ASYNC_CMD_SET_AV_DELAY:
+			case ASYNC_CMD_SET_AV_SPEED: {
+				int operation_result = 1;
+				int ret = avos_mp_control_common(mp, &command, &operation_result);
+				async_control_complete(mp, &command, ret, operation_result);
+				break;
+			}
+			case ASYNC_CMD_EXIT:
+				loop = 0;
+				break;
+		}
+	}
+
+	return NULL;
+}
+
+static int async_cmd_wait(avos_mp_t *mp)
+{
+	int ret;
+
+	pthread_mutex_lock(&mp->async.mtx);
+	if (mp->async.cur_cmd.id == ASYNC_CMD_EXIT) {
+		ret = 1;
+	} else {
+		while (mp->async.cur_cmd.id != ASYNC_CMD_WAIT ||
+		       async_has_pending_locked(mp)) {
+			MPLOGV("WARNING: waiting for async thread");
+			pthread_cond_wait(&mp->async.cond, &mp->async.mtx);
+		}
+		ret = 0;
+	}
+	pthread_mutex_unlock(&mp->async.mtx);
+	return ret;
+}
+
+static int async_cmd_is_running(avos_mp_t *mp)
+{
+	int ret;
+
+	pthread_mutex_lock(&mp->async.mtx);
+	ret = mp->async.cur_cmd.id != ASYNC_CMD_WAIT ||
+	      async_has_pending_locked(mp);
+	pthread_mutex_unlock(&mp->async.mtx);
+	return ret;
+}
+
+static int async_cmd_get_cached_isplaying(avos_mp_t *mp, int *isplaying)
+{
+	int running;
+
+	pthread_mutex_lock(&mp->async.mtx);
+	running = mp->async.cur_cmd.id != ASYNC_CMD_WAIT ||
+		  async_has_pending_locked(mp);
+	if (running)
+		*isplaying = mp->last.isplaying;
+	pthread_mutex_unlock(&mp->async.mtx);
+	return running;
+}
+
+static int async_cmd_add(avos_mp_t *mp, int id, int arg)
+{
+	pthread_mutex_lock(&mp->async.mtx);
+	if ((mp->async.closing && id != ASYNC_CMD_WAIT && id != ASYNC_CMD_EXIT) ||
+	    (id == ASYNC_CMD_SEEK && (!mp->media || mp->async.open_pending))) {
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_CRITICAL;
+	}
+	if (id == ASYNC_CMD_WAIT || id == ASYNC_CMD_EXIT) {
+		mp->async.closing = 1;
+		mp->last.isplaying = 0;
+		if (mp->async.next_cmd.id == ASYNC_CMD_OPEN) {
+			mp->async.open_pending = 0;
+			mp->async.open_result = AVOS_ERR;
+		}
+		if (mp->media) {
+			if (mp->type == TYPE_VID)
+				avos_mp_video_abort(mp, mp->media);
+			else if (mp->type == TYPE_AUD)
+				avos_mp_audio_abort(mp, mp->media);
+		}
+		mp->async.pending_transport = ASYNC_CMD_WAIT;
+		mp->async.control_head = 0;
+		mp->async.control_count = 0;
+		mp->async.speed_generation++;
+		mp->async.audio_track_generation++;
+		mp->async.subtitle_track_generation++;
+		// Invalidate an in-flight transport result during close/destroy so it
+		// cannot restore state or report an obsolete failure.
+		mp->async.transport_generation++;
+	}
+	if ((id == ASYNC_CMD_SEEK || id == ASYNC_CMD_WAIT || id == ASYNC_CMD_EXIT) &&
+	    mp->async.cur_cmd.id == ASYNC_CMD_SEEK &&
+	    mp->type == TYPE_VID && mp->media) {
+		avos_mp_video_supersede_seek_preview((avos_mp_video_t *)mp->media);
+	}
+	mp->async.next_cmd.id = id;
+	mp->async.next_cmd.arg = arg;
+	pthread_cond_broadcast(&mp->async.cond);
+	pthread_mutex_unlock(&mp->async.mtx);
+	return AVOS_ERR_OK;
+}
+
+static int async_cmd_set_transport(avos_mp_t *mp, int command)
+{
+	pthread_mutex_lock(&mp->async.mtx);
+	if (!mp->media || (mp->type != TYPE_VID && mp->type != TYPE_AUD) ||
+	    mp->async.closing ||
+	    mp->async.cur_cmd.id == ASYNC_CMD_EXIT ||
+	    mp->async.next_cmd.id == ASYNC_CMD_EXIT) {
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_CRITICAL;
+	}
+	if (command == ASYNC_CMD_PAUSE &&
+	    mp->async.cur_cmd.id == ASYNC_CMD_SEEK &&
+	    mp->type == TYPE_VID && mp->media) {
+		avos_mp_video_supersede_seek_preview((avos_mp_video_t *)mp->media);
+	}
+	mp->async.transport_generation++;
+	mp->async.pending_transport = command;
+	mp->last.isplaying = command == ASYNC_CMD_START;
+	pthread_cond_broadcast(&mp->async.cond);
+	pthread_mutex_unlock(&mp->async.mtx);
+	return AVOS_ERR_OK;
+}
+
+static avos_mp_t *avos_mp_create(avos_mp_event_cb_t event_cb)
+{
+	avos_mp_t *mp = acalloc(1, sizeof(avos_mp_t));
+	if (!mp)
+		return NULL;
+	mp->fd = -1;
+	mp->event_cb = event_cb;
+	mp->metadata_buffer = avos_metadata_create();
+	pthread_mutex_init(&mp->metadata_mtx, NULL);
+	pthread_mutex_init(&mp->close_mtx, NULL);
+	pthread_mutex_init(&mp->async.mtx, NULL);
+	pthread_cond_init(&mp->async.cond, NULL);
+	if (!mp->metadata_buffer ||
+	    pthread_create(&mp->async.thread, NULL, async_thread, mp)) {
+		if (mp->metadata_buffer) avos_metadata_destroy(&mp->metadata_buffer);
+		pthread_cond_destroy(&mp->async.cond);
+		pthread_mutex_destroy(&mp->async.mtx);
+		pthread_mutex_destroy(&mp->close_mtx);
+		pthread_mutex_destroy(&mp->metadata_mtx);
+		afree(mp);
+		return NULL;
+	}
+	MPLOG();
+	return mp;
+}
+
+// JNI retains under its handle lock, before release/reset can unpublish mp.
+static int avos_mp_retain(avos_mp_t *mp)
+{
+	pthread_mutex_lock(&mp->async.mtx);
+	int ret = mp->async.destroying ? AVOS_ERR_CRITICAL : AVOS_ERR_OK;
+	if (ret == AVOS_ERR_OK) mp->async.users++;
+	pthread_mutex_unlock(&mp->async.mtx);
+	return ret;
+}
+
+static void avos_mp_release(avos_mp_t *mp)
+{
+	pthread_mutex_lock(&mp->async.mtx);
+	if (--mp->async.users == 0)
+		pthread_cond_broadcast(&mp->async.cond);
+	pthread_mutex_unlock(&mp->async.mtx);
+}
+
+static int avos_mp_close(avos_mp_t *mp);
+static int avos_mp_destroy(avos_mp_t *mp)
+{
+	MPLOG();
+
+	pthread_mutex_lock(&mp->async.mtx);
+	mp->async.destroying = 1;
+	pthread_mutex_unlock(&mp->async.mtx);
+	// Interrupt prepare/seek before waiting for their JNI callers to return.
+	async_cmd_add(mp, ASYNC_CMD_WAIT, 0);
+	pthread_mutex_lock(&mp->async.mtx);
+	while (mp->async.users)
+		pthread_cond_wait(&mp->async.cond, &mp->async.mtx);
+	pthread_mutex_unlock(&mp->async.mtx);
+	avos_mp_close(mp);
+
+	async_cmd_add(mp, ASYNC_CMD_EXIT, 0);
+	pthread_join(mp->async.thread, NULL);
+	pthread_mutex_destroy(&mp->async.mtx);
+	pthread_cond_destroy(&mp->async.cond);
+
+	if (mp->metadata_buffer)
+		avos_metadata_destroy(&mp->metadata_buffer);
+	pthread_mutex_destroy(&mp->metadata_mtx);
+	pthread_mutex_destroy(&mp->close_mtx);
+	if (mp->fd != -1)
+		close(mp->fd);
+	stream_url_clear(&mp->src);
+	afree(mp);
+	return AVOS_ERR_OK;
+}
+
+static void avos_mp_setpriv(avos_mp_t *mp, void *priv)
+{
+	mp->priv = priv;
+}
+
+static void *avos_mp_getpriv(avos_mp_t *mp)
+{
+	return mp->priv;
+}
+
+#ifdef UPNP_FUSE_TO_HTTP
+const char *upnp_fuse_to_http(avos_mp_t *mp, const char *file_url, char *http_url, int max)
+{
+	char xml[STREAM_MAX_PATH_LEN+1];
+	char buf1[STREAM_MAX_PATH_LEN+1];
+	char buf2[STREAM_MAX_PATH_LEN+1];
+	char line[1024];
+	const char *ext;
+	int found = 0;
+	FILE *file = NULL;
+
+	ext = get_extension(file_url);
+	if (ext[0] == '\0')
+		goto end;
+	// get file without ext
+	cut_path_r(file_url, buf1, STREAM_MAX_PATH_LEN);
+	cut_n_extension_r(buf1, buf2, STREAM_MAX_PATH_LEN);
+	// get path
+	cut_n_file_r(file_url, buf1, STREAM_MAX_PATH_LEN);
+	snprintf(xml, STREAM_MAX_PATH_LEN, "%s.metadata/%s.xml", buf1, buf2);
+
+	file = fopen(xml, "r");
+	if (!file) {
+		// try again with an other file
+		snprintf(xml, STREAM_MAX_PATH_LEN, "%s.metadata/%s.%s.xml", buf1, buf2, ext);
+		file = fopen(xml, "r");
+		if (!file) {
+			printf("media_server: fopen failed: %d - %s\n", errno, strerror(errno));
+			goto end;
+		}
+	}
+	while (fgets(line, 1024, file) == line) {
+		const char *p;
+
+		if ((p = strstr(line, "http-get")) != NULL && (p = strstr(p, "http://")) != NULL) {
+			const char *http_ext, *end = strstr(p, "</res>");
+			int len;
+
+			if (end - p > STREAM_MAX_PATH_LEN)
+				continue;
+			strnZcpy(http_url, p, end - p);
+			found = 1;
+			// priority to url containing original extension
+			http_ext = strrchr(http_url, '.');
+			if (http_ext) {
+				http_ext += 1;
+				end = strrchr(http_ext, '?');
+				if (end)
+					len = end - http_ext;
+				else
+					len = strlen(http_ext);
+				if (strncmp(http_ext, ext, len) == 0)
+					break;
+			}
+		}
+	}
+end:
+	if (file)
+		fclose(file);
+	return found == 1 ? http_url : file_url;
+}
+#endif
+
+static void mp_unlock_scope(pthread_mutex_t **mutex)
+{
+	if (*mutex) pthread_mutex_unlock(*mutex);
+}
+
+// Protect synchronous users of mp->media against close. This mutex is never
+// taken by the worker or its callbacks, so waiting for the worker stays safe.
+#define MP_MEDIA_GUARD(mp) \
+	pthread_mutex_t *media_guard __attribute__((cleanup(mp_unlock_scope))) = &(mp)->close_mtx; \
+	pthread_mutex_lock(media_guard)
+
+// Queries retain their cached fast path while stop is waiting for native
+// workers; they must not turn a slow shutdown into a UI-thread wait.
+#define MP_MEDIA_TRY_GUARD(mp) \
+	pthread_mutex_t *media_guard __attribute__((cleanup(mp_unlock_scope))) = &(mp)->close_mtx; \
+	if (pthread_mutex_trylock(media_guard)) media_guard = NULL
+
+static int avos_mp_setdatasource(avos_mp_t *mp, const char *path, const char **keys, const char **values)
+{
+	MP_MEDIA_GUARD(mp);
+	pthread_mutex_lock(&mp->async.mtx);
+	int unavailable = mp->media || mp->async.open_pending || mp->async.destroying;
+	pthread_mutex_unlock(&mp->async.mtx);
+	if (unavailable) return AVOS_ERR_CRITICAL;
+
+	MPLOG("%s", path);
+
+#ifdef UPNP_FUSE_TO_HTTP
+	char http_url[STREAM_MAX_PATH_LEN];
+	if (strstr(path, UPNP_ROOT) != NULL)
+		path = upnp_fuse_to_http(mp, path, http_url, STREAM_MAX_PATH_LEN);
+#endif
+	const char *extra_name = NULL;
+	if (keys && values) {
+		int i;
+		for (i = 0; keys[i] != NULL && values[i] != NULL; ++i) {
+			const char *key = keys[i];
+			if (strcmp(key, "extra_name") == 0)
+				extra_name = values[i];
+		}
+	}
+	if (extra_name)
+		MPLOG("EXTRA_NAME: %s", extra_name);
+	if (stream_url_cpy_url_name_headers(&mp->src, path, extra_name, keys, values))
+		return AVOS_ERR_CRITICAL;
+	if (mp->fd >= 0) { close(mp->fd); mp->fd = -1; }
+	get_url_type(&mp->src, &mp->type, &mp->etype);
+	MPLOGV("file type: %d|%s  %d|%s", mp->type, mp->type == TYPE_VID ? "VIDEO" : mp->type == TYPE_AUD ? "AUDIO" : "UNKNOWN", mp->etype, av_get_etype_name( mp->etype) );
+	if (mp->type == TYPE_NONE || mp->type == TYPE_UNKNOWN) {
+		// Allow HTTP/HTTPS URLs without file extensions to proceed.
+		// FFmpeg will probe the stream format when it opens.
+		if (!strncmp(mp->src.url, "http://", 7) || !strncmp(mp->src.url, "https://", 8)) {
+			MPLOG("Unknown file type for HTTP URL, allowing FFmpeg to probe: %s", mp->src.url);
+		} else {
+			avos_mp_sendevent(mp, MEDIA_ERROR, MEDIA_ERROR_VE_FILE_ERROR, 0);
+		}
+	}
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_setdatasource_fd(avos_mp_t *mp, int fd, int64_t offset, int64_t length)
+{
+	MP_MEDIA_GUARD(mp);
+	pthread_mutex_lock(&mp->async.mtx);
+	int unavailable = mp->media || mp->async.open_pending || mp->async.destroying;
+	pthread_mutex_unlock(&mp->async.mtx);
+	if (unavailable) return AVOS_ERR_CRITICAL;
+	int owned_fd = stream_fd_duplicate(fd, offset, &length);
+	if (owned_fd < 0) return AVOS_ERR;
+	char fd_url[128];
+	snprintf(fd_url, sizeof(fd_url), "fd://%d:%"PRId64":%"PRId64, owned_fd, offset, length);
+	if (stream_url_cpy_url(&mp->src, fd_url)) {
+		close(owned_fd);
+		return AVOS_ERR;
+	}
+	if (mp->fd >= 0) close(mp->fd);
+	mp->fd = owned_fd;
+	mp->type = TYPE_VID;
+	mp->etype = ETYPE_MKV; // select FFmpeg, which probes the descriptor's contents
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_setsurface(avos_mp_t *mp, void *handle)
+{
+	// A live decoder/sink borrows this window until close finishes. Surface
+	// replacement is a stop/reopen transaction performed by the Java owner.
+	pthread_mutex_lock(&mp->async.mtx);
+	int ret = AVOS_ERR_OK;
+	if (mp->async.destroying ||
+	    (handle != mp->surface_handle && (mp->media || mp->async.open_pending)))
+		ret = AVOS_ERR_CRITICAL;
+	else
+		mp->surface_handle = handle;
+	pthread_mutex_unlock(&mp->async.mtx);
+	return ret;
+}
+
+int avos_mp_getmetadata(avos_mp_t *mp, metadata_buffer_t **buffer)
+{
+	MPLOGV("%p", buffer);
+	if (!buffer)
+		return AVOS_ERR;
+	pthread_mutex_lock(&mp->metadata_mtx);
+	*buffer = avos_metadata_dup(mp->metadata_buffer);
+	pthread_mutex_unlock(&mp->metadata_mtx);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_begin_open(avos_mp_t *mp, int notify, uint32_t *generation)
+{
+	pthread_mutex_lock(&mp->close_mtx);
+	pthread_mutex_lock(&mp->async.mtx);
+	int ret = AVOS_ERR_CRITICAL;
+	if (!mp->media && !mp->async.open_pending && !mp->async.destroying &&
+	    mp->async.cur_cmd.id == ASYNC_CMD_WAIT && !async_has_pending_locked(mp)) {
+		// Stop ends a session, not the player. Only an explicit new prepare
+		// reopens command admission after close has completely finished.
+		mp->async.closing = 0;
+		mp->async.open_pending = 1;
+		mp->async.open_result = AVOS_ERR;
+		mp->async.open_generation++;
+		if (generation) *generation = mp->async.open_generation;
+		mp->last.isplaying = 0;
+		mp->async.next_cmd.id = ASYNC_CMD_OPEN;
+		mp->async.next_cmd.arg = notify;
+		pthread_cond_broadcast(&mp->async.cond);
+		ret = AVOS_ERR_OK;
+	}
+	pthread_mutex_unlock(&mp->async.mtx);
+	pthread_mutex_unlock(&mp->close_mtx);
+	return ret;
+}
+
+static int avos_mp_open(avos_mp_t *mp)
+{
+	uint32_t generation;
+	int ret = avos_mp_begin_open(mp, 0, &generation);
+	if (ret != AVOS_ERR_OK) return ret;
+	pthread_mutex_lock(&mp->async.mtx);
+	while (mp->async.open_pending && generation == mp->async.open_generation)
+		pthread_cond_wait(&mp->async.cond, &mp->async.mtx);
+	// A stopped prepare must not inherit a subsequent file's completion.
+	ret = mp->async.closing || generation != mp->async.open_generation ?
+		AVOS_ERR : mp->async.open_result;
+	pthread_mutex_unlock(&mp->async.mtx);
+	return ret;
+}
+
+static int avos_mp_open_async(avos_mp_t *mp)
+{
+	return avos_mp_begin_open(mp, 1, NULL);
+}
+
+static int avos_mp_close(avos_mp_t *mp)
+{
+	int ret = AVOS_ERR_OK;
+	pthread_mutex_lock(&mp->close_mtx);
+	// Even an unpublished media object can have OPEN queued or executing.
+	// Cancel admission first, then wait for publication/open to finish.
+	async_cmd_add(mp, ASYNC_CMD_WAIT, 0);
+	async_cmd_wait(mp);
+	if (mp->media) {
+		if (mp->type == TYPE_VID)
+			ret = avos_mp_video_close(mp, mp->media);
+		else if (mp->type == TYPE_AUD)
+			ret = avos_mp_audio_close(mp, mp->media);
+		pthread_mutex_lock(&mp->async.mtx);
+		if (mp->type == TYPE_VID)
+			avos_mp_video_destroy((avos_mp_video_t **)&mp->media);
+		else if (mp->type == TYPE_AUD)
+			avos_mp_audio_destroy((avos_mp_audio_t **)&mp->media);
+		pthread_mutex_unlock(&mp->async.mtx);
+	}
+	pthread_mutex_unlock(&mp->close_mtx);
+	return ret;
+}
+
+static int avos_mp_start(avos_mp_t *mp)
+{
+	MPLOG();
+	return async_cmd_set_transport(mp, ASYNC_CMD_START);
+}
+
+static int avos_mp_pause(avos_mp_t *mp)
+{
+	MPLOG();
+	return async_cmd_set_transport(mp, ASYNC_CMD_PAUSE);
+}
+
+static int avos_mp_isplaying(avos_mp_t *mp, int *ret)
+{
+	MP_MEDIA_TRY_GUARD(mp);
+	if (!media_guard) {
+		pthread_mutex_lock(&mp->async.mtx);
+		*ret = mp->last.isplaying;
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_OK;
+	}
+	if (!async_cmd_get_cached_isplaying(mp, ret)) {
+		AVOS_MP_COMMON(isplaying, mp, ret);
+		mp->last.isplaying = *ret;
+	}
+	MPLOGV("%d", *ret);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_seek(avos_mp_t *mp, uint32_t msec)
+{
+	int ret = async_cmd_add(mp, ASYNC_CMD_SEEK, msec);
+	if (ret == AVOS_ERR_OK) async_cmd_wait(mp);
+	return ret;
+}
+
+static int avos_mp_seek_async(avos_mp_t *mp, uint32_t msec)
+{
+	MPLOGV();
+	mp->last.pos = msec;
+	return async_cmd_add(mp, ASYNC_CMD_SEEK, msec);
+}
+
+static int avos_mp_setstarttime(avos_mp_t *mp, uint32_t msec)
+{
+	MPLOG();
+	mp->starttime = msec;
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_getpos(avos_mp_t *mp, uint32_t *ret)
+{
+	MP_MEDIA_TRY_GUARD(mp);
+	if (!media_guard) {
+		pthread_mutex_lock(&mp->async.mtx);
+		*ret = mp->last.pos;
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_OK;
+	}
+	if (async_cmd_is_running(mp)) {
+		*ret = mp->last.pos;
+	} else {
+		AVOS_MP_COMMON(getpos, mp, ret);
+		mp->last.pos = *ret;
+	}
+	//MPLOGV("%d", *ret);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_getduration(avos_mp_t *mp, uint32_t *ret)
+{
+	MP_MEDIA_TRY_GUARD(mp);
+	if (!media_guard) {
+		pthread_mutex_lock(&mp->async.mtx);
+		*ret = mp->last.duration;
+		pthread_mutex_unlock(&mp->async.mtx);
+		return AVOS_ERR_OK;
+	}
+	if (async_cmd_is_running(mp)) {
+		*ret = mp->last.duration;
+	} else {
+		AVOS_MP_COMMON(getduration, mp, ret);
+		mp->last.duration = *ret;
+	}
+	MPLOGV("%d", *ret);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_setlooping(avos_mp_t *mp, int looping)
+{
+	MPLOG("%d", looping);
+	mp->islooping = looping;
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_islooping(avos_mp_t *mp, int *ret)
+{
+	*ret = mp->islooping;
+	MPLOGV("%d", *ret);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_getaudiosessionid(avos_mp_t *mp, int *ret)
+{
+	MP_MEDIA_TRY_GUARD(mp);
+	pthread_mutex_lock(&mp->async.mtx);
+	int opening = mp->async.open_pending;
+	pthread_mutex_unlock(&mp->async.mtx);
+	if (!media_guard || opening) {
+		*ret = 0;
+		return AVOS_ERR_OK;
+	}
+	AVOS_MP_COMMON(getaudiosessionid, mp, ret);
+	MPLOGV("%d", *ret);
+	return AVOS_ERR_OK;
+}
+
+static int avos_mp_setaudiotrack(avos_mp_t *mp, int track, int *ret)
+{
+	MPLOG("%d", track);
+	int result = async_control_add(mp, ASYNC_CMD_SET_AUDIO_TRACK,
+	    track, 0, 0.0f);
+	*ret = result == AVOS_ERR_OK;
+	return result;
+}
+
+static int avos_mp_refreshaudiooutput(avos_mp_t *mp)
+{
+	MPLOG();
+	return async_control_add(mp, ASYNC_CMD_REFRESH_AUDIO_OUTPUT,
+	    0, 0, 0.0f);
+}
+
+static int avos_mp_checksubtitles(avos_mp_t *mp)
+{
+	MPLOG();
+	return async_control_add(mp, ASYNC_CMD_CHECK_SUBTITLES,
+	    0, 0, 0.0f);
+}
+
+static int avos_mp_setsubtitletrack(avos_mp_t *mp, int track, int *ret)
+{
+	MPLOG("%d", track);
+	int result = async_control_add(mp, ASYNC_CMD_SET_SUBTITLE_TRACK,
+	    track, 0, 0.0f);
+	*ret = result == AVOS_ERR_OK;
+	return result;
+}
+
+static int avos_mp_setsubtitledelay(avos_mp_t *mp, int delay)
+{
+	MPLOG("%d", delay);
+	return async_control_add(mp, ASYNC_CMD_SET_SUBTITLE_DELAY,
+	    delay, 0, 0.0f);
+}
+
+static int avos_mp_setsubtitleratio(avos_mp_t *mp, uint32_t n, uint32_t d)
+{
+	MPLOG("%d/%d", n, d);
+	return async_control_add(mp, ASYNC_CMD_SET_SUBTITLE_RATIO,
+	    (int)n, (int)d, 0.0f);
+}
+
+static int avos_mp_setaudiofilter(avos_mp_t *mp, int n, int nightOn)
+{
+	MPLOG("%d %d", n, nightOn);
+	return async_control_add(mp, ASYNC_CMD_SET_AUDIO_FILTER,
+	    n, nightOn, 0.0f);
+}
+
+static int avos_mp_setavdelay(avos_mp_t *mp, int delay)
+{
+	MPLOG("%d", delay);
+	return async_control_add(mp, ASYNC_CMD_SET_AV_DELAY,
+	    delay, 0, 0.0f);
+}
+
+static int avos_mp_setavspeed(avos_mp_t *mp, float speed)
+{
+	MPLOG("%f", speed);
+	return async_control_add(mp, ASYNC_CMD_SET_AV_SPEED,
+	    0, 0, speed);
+}
+
+static int avos_mp_setnextrack(avos_mp_t *mp, const char *path)
+{
+	MP_MEDIA_GUARD(mp);
+#ifdef UPNP_FUSE_TO_HTTP
+	char http_url[STREAM_MAX_PATH_LEN];
+	if (path && strstr(path, UPNP_ROOT) != NULL)
+		path = upnp_fuse_to_http(mp, path, http_url, STREAM_MAX_PATH_LEN);
+#endif
+	MPLOG("%s", path);
+	async_cmd_wait(mp);
+	AVOS_MP_AUDIO(setnextrack, mp, path);
+	return AVOS_ERR_OK;
+}
+
+static const avos_mp_handle_t avos_mp_handle = {
+	.create = avos_mp_create,
+	.destroy = avos_mp_destroy,
+	.setpriv = avos_mp_setpriv,
+	.getpriv = avos_mp_getpriv,
+	.setdatasource = avos_mp_setdatasource,
+	.setdatasource_fd = avos_mp_setdatasource_fd,
+	.setsurface = avos_mp_setsurface,
+	.getmetadata = avos_mp_getmetadata,
+	.open = avos_mp_open,
+	.open_async = avos_mp_open_async,
+	.close = avos_mp_close,
+	.start = avos_mp_start,
+	.pause = avos_mp_pause,
+	.isplaying = avos_mp_isplaying,
+	.seek = avos_mp_seek,
+	.seek_async = avos_mp_seek_async,
+	.setstarttime = avos_mp_setstarttime,
+	.getpos = avos_mp_getpos,
+	.getduration = avos_mp_getduration,
+	.setlooping = avos_mp_setlooping,
+	.islooping = avos_mp_islooping,
+	.getaudiosessionid = avos_mp_getaudiosessionid,
+	.setaudiotrack = avos_mp_setaudiotrack,
+	.refreshaudiooutput = avos_mp_refreshaudiooutput,
+	.checksubtitles = avos_mp_checksubtitles,
+	.setsubtitletrack = avos_mp_setsubtitletrack,
+	.setsubtitledelay = avos_mp_setsubtitledelay,
+	.setsubtitleratio = avos_mp_setsubtitleratio,
+	.setaudiofilter = avos_mp_setaudiofilter,
+	.setavdelay = avos_mp_setavdelay,
+	.setavspeed = avos_mp_setavspeed,
+	.setnextrack = avos_mp_setnextrack,
+	.retain = avos_mp_retain,
+	.release = avos_mp_release,
+};
+
+const avos_mp_handle_t *avos_mp_get_handle()
+{
+	return &avos_mp_handle;
+}

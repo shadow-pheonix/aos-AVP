@@ -1,0 +1,1342 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
+package com.archos.mediacenter.video.browser;
+
+import java.util.Locale;
+
+
+import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.DialogInterface.OnClickListener;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.content.SharedPreferences;
+import android.content.SharedPreferences.Editor;
+import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.IBinder;
+import android.os.Parcelable;
+import android.view.ContextMenu;
+import android.view.ContextMenu.ContextMenuInfo;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.View.OnKeyListener;
+import android.view.ViewGroup;
+import android.view.ViewStub;
+import android.widget.AbsListView;
+import android.widget.AdapterView;
+import android.widget.AdapterView.OnItemLongClickListener;
+import android.widget.BaseAdapter;
+import android.widget.Button;
+import android.widget.GridView;
+import android.widget.ListView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.os.BundleCompat;
+import androidx.core.widget.TextViewCompat;
+import androidx.core.view.MenuProvider;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
+import androidx.preference.PreferenceManager;
+
+import com.archos.filecorelibrary.FileExtendedInfo;
+import com.archos.filecorelibrary.FileUtilsQ;
+import com.archos.mediacenter.utils.ActionBarSubmenu;
+import com.archos.mediacenter.utils.ActionBarSubmenu.ActionBarSubmenuListener;
+import com.archos.mediacenter.utils.ThumbnailEngine;
+import com.archos.mediacenter.utils.ThumbnailRequest;
+import com.archos.mediacenter.utils.ThumbnailRequester;
+import com.archos.mediacenter.utils.trakt.Trakt;
+import com.archos.mediacenter.video.CustomApplication;
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.autoscraper.AutoScraperActivity;
+import com.archos.mediacenter.video.browser.dialogs.DeleteDialog;
+import com.archos.mediacenter.video.browser.dialogs.DialogRetrieveSubtitles;
+import com.archos.mediacenter.video.browser.dialogs.Paste;
+import com.archos.mediacenter.video.browser.subtitlesmanager.SubtitleManager;
+import com.archos.mediacenter.video.browser.tools.MultipleSelectionManager;
+import com.archos.mediacenter.video.player.PlayerActivity;
+import com.archos.mediacenter.video.player.tvmenu.TVUtils;
+import com.archos.mediacenter.video.utils.ExternalPlayerResultListener;
+import com.archos.mediacenter.video.utils.ExternalPlayerWithResultStarter;
+import com.archos.mediacenter.video.utils.SubtitlesWizardActivity;
+import com.archos.mediacenter.video.utils.VideoPreferencesCommon;
+import com.archos.mediacenter.video.utils.VideoUtils;
+import com.archos.mediaprovider.ImportState;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+public abstract class Browser extends Fragment implements AbsListView.OnScrollListener,
+        View.OnTouchListener,
+        AdapterView.OnItemClickListener,
+        ThumbnailEngine.Listener,
+        ActionBarSubmenuListener, OnItemLongClickListener, Delete.DeleteListener, ExternalPlayerWithResultStarter {
+
+    private static final Logger log = LoggerFactory.getLogger(Browser.class);
+
+    // Options menu items
+    protected static final int MENU_VIEW_MODE_GROUP = 2;
+    protected final static int MENU_SUBLOADER_GROUP = 3;
+    protected static final int MENU_HIDE_WATCHED_GROUP = 4;
+    protected static final int MENU_VIEW_MODE_LIST = 11;
+    protected static final int MENU_VIEW_MODE_GRID = 12;
+    protected static final int MENU_VIEW_MODE_DETAILS = 13;
+    protected static final int MENU_VIEW_MODE = 14;
+    protected static final int MENU_VIEW_HIDE_SEEN = 15;
+
+    private final static int SUBMENU_ITEM_LIST_INDEX = 0;
+    private final static int SUBMENU_ITEM_GRID_INDEX = 1;
+    private final static int SUBMENU_ITEM_DETAILS_INDEX = 2;
+
+    static final protected String EMPTY_STRING = "";
+    static final private String FIRST_VISIBLE_POSITION = "firstVisiblePosition";
+    static final private String LAST_POSITION = "lastPosition";
+    static final protected String RESUME = "resume";
+    static final private String SELECTED_POSITION = "selectedPosition";
+    static final private String TIME_HOUR = "%kh%M'";
+    static final private String TIME_MINUTE = "%M'%S''";
+    static final private String TIME_SECOND = "%S''";
+    protected static final String COPY_NAME = "copy_name";
+    protected static final String COPY_LENGTH = "copy_length";
+    protected static final String COPY_DIALOG = "copy_dialog";
+    private static final String LIST_STATE_KEY = "list_state_key";
+    private static final int PLAY_ACTIVITY_REQUEST_CODE = 880;
+    protected boolean mDownloadSubs = false;
+    protected Paste mPasteDialog;
+    protected AlertDialog cancelDialog;
+    protected String mCopyName;
+    protected long mCopyLength = 0;
+    protected int mCopyDialogID = -1;
+    protected boolean mHideWatched;
+    protected boolean mHideOption = false;
+    protected int LOADING_FINISHED = 2;
+    protected final Handler mHandler = new Handler(Looper.getMainLooper());
+
+    protected int mDeletedPosition;
+    protected int mFirstVisiblePosition;
+    protected int mSelectedPosition;
+    protected int mViewMode;
+    protected AbsListView  mArchosGridView;
+    protected BaseAdapter mBrowserAdapter;
+    private boolean mCommonDefaultInvalidate = true;
+    protected Context mContext;
+    private static AlertDialog mDialogDelete;
+    private static DeleteDialog mDialogDeleting;
+    protected DialogRetrieveSubtitles mDialogRetrieveSubtitles;
+    protected SharedPreferences mPreferences;
+    protected ThumbnailEngineVideo mThumbnailEngine;
+    protected ThumbnailRequester mThumbnailRequester;
+    protected int mTouchX;
+    protected int mTouchY;
+    protected boolean mIsClickValid;
+    protected View mRootView;
+    protected ActionBarSubmenu mSortModeSubmenu;
+    private View mMenuAnchor;
+    protected int mScroll =0;
+    protected int mOffset=0;
+    static final String CURRENT_SCROLL = "currentscroll";
+    private Parcelable mListState;
+    private Delete mDelete;
+
+    private List<Uri> deleteUrisList = null;
+    private static Boolean isFileManagerServiceBound = false;
+
+    private final ActivityResultLauncher<Intent> playLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> ExternalPlayerResultListener.getInstance().onActivityResult(
+                    PLAY_ACTIVITY_REQUEST_CODE, result.getResultCode(), result.getData()));
+
+    private final ActivityResultLauncher<IntentSenderRequest> deleteLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartIntentSenderForResult(),
+            result -> { // result can be RESULT_OK, RESULT_CANCELED
+                Context context = getActivity();
+                if (log.isDebugEnabled()) log.debug("ActivityResultLauncher deleteLauncher: result {}", result.toString());
+                if (result.getResultCode() == Activity.RESULT_OK) {
+                    if (log.isDebugEnabled()) log.debug("ActivityResultLauncher deleteLauncher: OK, deleteUris {}", ((deleteUrisList != null) ? Arrays.toString(deleteUrisList.toArray()) : null));
+                    if (mDelete != null && deleteUrisList != null && deleteUrisList.size() >= 1) {
+                        if (log.isDebugEnabled()) log.debug("ActivityResultLauncher deleteLauncher: calling delete.deleteOK on {}", deleteUrisList.get(0));
+                        mDelete.deleteOK(deleteUrisList.get(0));
+                    }
+                } else {
+                    if (log.isDebugEnabled()) log.debug("ActivityResultLauncher deleteLauncher: NO, deleteUris {}", ((deleteUrisList != null) ? Arrays.toString(deleteUrisList.toArray()) : null));
+                    if (mDelete != null && deleteUrisList != null && deleteUrisList.size() > 1)
+                        mDelete.deleteNOK(deleteUrisList.get(0));
+                }
+            });
+
+    /**
+     * Subclasses must create a new BrowserAdapter and according to the adapter
+     * class, create a new ThumbnailRequester.
+     */
+    @Override
+    public void onCreate(Bundle bundle) {
+        CustomApplication.loadLocale(getResources());
+        super.onCreate(bundle);
+        if (log.isDebugEnabled()) log.debug("onCreate");
+        // pass the right deleteLauncher linked to activity
+        FileUtilsQ.setDeleteLauncher(deleteLauncher);
+        mSelectedPosition=0;
+        mContext = getActivity().getApplicationContext();
+
+        mPreferences = PreferenceManager.getDefaultSharedPreferences(getActivity());
+
+        mThumbnailEngine = ThumbnailEngineVideo.getInstance(mContext);
+        mThumbnailEngine.setThumbnailSize(
+                getResources().getDimensionPixelSize(R.dimen.video_details_poster_width),
+                getResources().getDimensionPixelSize(R.dimen.video_details_poster_height));
+        Bundle posBundle = bundle!=null?bundle:getArguments();
+
+        if (posBundle != null) {
+            mFirstVisiblePosition = posBundle.getInt(FIRST_VISIBLE_POSITION);
+            mSelectedPosition = posBundle.getInt(SELECTED_POSITION);
+            mScroll = posBundle.getInt(CURRENT_SCROLL);
+            mListState = BundleCompat.getParcelable(posBundle, LIST_STATE_KEY, Parcelable.class);
+        }
+        if (bundle != null) {
+            mCopyName = bundle.getString(COPY_NAME);
+            mCopyLength = bundle.getLong(COPY_LENGTH);
+            mCopyDialogID = bundle.getInt(COPY_DIALOG);
+        }
+    }
+
+    @Override
+    public void onViewCreated(View view, Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        requireActivity().addMenuProvider(new MenuProvider() {
+            @Override
+            public void onCreateMenu(Menu menu, MenuInflater menuInflater) {
+                if (mBrowserAdapter != null && !mBrowserAdapter.isEmpty()) {
+                    MenuItem viewModeMenuItem = menu.add(MENU_VIEW_MODE_GROUP, MENU_VIEW_MODE, Menu.NONE, R.string.view_mode);
+                    viewModeMenuItem.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                }
+                if (shouldEnableMultiSelection())
+                    menu.add(0, R.string.multiple_selection, 0, R.string.multiple_selection);
+            }
+            @Override
+            public void onPrepareMenu(Menu menu) {
+                menu.setGroupVisible(MENU_HIDE_WATCHED_GROUP, mHideOption);
+                MenuItem item = menu.findItem(MENU_VIEW_MODE);
+                if (item != null) {
+                    int icon = getViewModeMenuIcon(mViewMode);
+                    if (icon != 0) item.setIcon(icon);
+                }
+            }
+            @Override
+            public boolean onMenuItemSelected(MenuItem item) {
+                if (item.getItemId() == MENU_VIEW_HIDE_SEEN) {
+                    mHideWatched = !mHideWatched;
+                    item.setTitle(mHideWatched ? R.string.hide_seen : R.string.show_all);
+                    mPreferences.edit().putBoolean(VideoPreferencesCommon.KEY_HIDE_WATCHED, mHideWatched).apply();
+                    return true;
+                } else if (item.getItemId() == R.string.multiple_selection) {
+                    enableMultiple(0, false);
+                    return true;
+                } else if (item.getItemId() == MENU_VIEW_MODE) {
+                    if (mViewMode == VideoUtils.VIEW_MODE_LIST) {
+                        applySelectedViewMode(VideoUtils.VIEW_MODE_GRID);
+                    } else if (mViewMode == VideoUtils.VIEW_MODE_GRID) {
+                        applySelectedViewMode(VideoUtils.VIEW_MODE_DETAILS);
+                    } else if (mViewMode == VideoUtils.VIEW_MODE_DETAILS) {
+                        applySelectedViewMode(VideoUtils.VIEW_MODE_LIST);
+                    }
+                    if (getActivity() != null) {
+                        getActivity().invalidateOptionsMenu();
+                    }
+                    return true;
+                }
+                return false;
+            }
+        }, getViewLifecycleOwner());
+    }
+
+    @Override
+    public void onResume() {
+        if (log.isDebugEnabled()) log.debug("onResume");
+        CustomApplication.loadLocale(getResources());
+        FileUtilsQ.setDeleteLauncher(deleteLauncher);
+        mThumbnailEngine.setListener(this, mHandler);
+        // Check if we need some thumbnails
+        if (mThumbnailRequester != null)
+            mThumbnailRequester.refresh(mArchosGridView);
+        super.onResume();
+    }
+
+    @Override
+    public void onPause() {
+        if (log.isDebugEnabled()) log.debug("onPause");
+        //Posted in mArchosGridView to retrieve these values when the GridView is rendered.
+        //risk of null values otherwise
+        mArchosGridView.post(new Runnable() {
+            @Override
+            public void run() {
+                setPosition();
+            }
+        });
+        mListState = mArchosGridView.onSaveInstanceState();
+        // If view mode has changed, save it for the next time.
+        int viewMode = mPreferences.getInt(getClass().getName(), -1);
+        if (mViewMode!= VideoUtils.VIEW_MODE_GRID_SHORT && (viewMode == -1 || viewMode != mViewMode)) {
+            Editor ed = mPreferences.edit();
+            ed.putInt(getClass().getName(), mViewMode);
+            ed.apply();
+        }
+
+        if (mDialogDeleting != null)
+            mDialogDeleting.dismiss();
+
+        if (mDialogRetrieveSubtitles != null)
+            mDialogRetrieveSubtitles.dismiss();
+
+        if (mPasteDialog != null)
+            mPasteDialog.dismiss();
+        mThumbnailEngine.cancelPendingRequestsForThisListener(this);
+        mThumbnailEngine.setListener(null, null);
+
+        super.onPause();
+    }
+
+    public void onStart(){
+        super.onStart();
+    }
+
+    public void onStop(){
+        super.onStop();
+        mCommonDefaultInvalidate = true;
+    }
+    @Override
+    public void onDestroy() {
+        if (log.isDebugEnabled()) log.debug("onDestroy");
+        mThumbnailEngine.cancelPendingRequestsForThisListener(this);
+
+        if (mArchosGridView != null)
+            unregisterForContextMenu(mArchosGridView);
+        if(mActionModeManager!=null) {
+            mActionModeManager.destroyActionBar();
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (mArchosGridView != null) {
+            state.putInt(FIRST_VISIBLE_POSITION, mArchosGridView.getFirstVisiblePosition());
+            state.putInt(SELECTED_POSITION, mArchosGridView.getSelectedItemPosition());
+            View v = mArchosGridView.getChildAt(mSelectedPosition-mFirstVisiblePosition);
+            mScroll = (v == null) ? 0 : v.getTop();
+            state.putInt(CURRENT_SCROLL, mScroll);
+            state.putParcelable(LIST_STATE_KEY, mListState);
+        }
+        state.putString(COPY_NAME, mCopyName);
+        state.putLong(COPY_LENGTH, mCopyLength);
+        state.putInt(COPY_DIALOG, mCopyDialogID);
+    }
+
+    /**
+     * May be overriden by child classes to have the ActionBar in NAVIGATION_MODE_LIST, for example
+     * @return
+     */
+    @SuppressWarnings("deprecation") // ActionBar navigation mode
+    protected int getActionBarNavigationMode() {
+        return ActionBar.NAVIGATION_MODE_STANDARD;
+    }
+
+
+
+
+    /*      request.getListPosition() return position in adapter.
+           meaning that with new headergridview, the first item would be 0+ headercount*columnscount
+           this is the value we need to get real itemView. However, adapter needs position without header
+
+     */
+    public void onThumbnailReady(ThumbnailRequest request, ThumbnailEngine.Result result) {
+        int requestListPosition = request.getListPosition();
+        int adapterPosition = request.getListPosition();
+        if(mArchosGridView instanceof HeaderGridView){
+            requestListPosition += ((HeaderGridView) mArchosGridView).getOffset();
+        }
+        else if(mArchosGridView instanceof ListView){
+            requestListPosition += ((ListView) mArchosGridView).getHeaderViewsCount()   ;
+        }
+        final int firstVisible = mArchosGridView.getFirstVisiblePosition();
+        final int lastVisible = mArchosGridView.getLastVisiblePosition();
+
+        // Check item is visible and make sure that the request is still
+        // matching the content of the list (it may have been changed since the
+        // request was sent).
+        if (firstVisible <= requestListPosition && requestListPosition <= lastVisible
+                && mThumbnailRequester.isRequestStillValid(request)) {
+            // Get the view at requested position.
+            View itemView = mArchosGridView.getChildAt(requestListPosition - firstVisible);
+            if (itemView != null) {
+                // As itemView isn't null, getView won't call newView so parent
+                // can be null, it doesn't matter.
+                mBrowserAdapter.getView(adapterPosition, itemView, null);
+            }
+        }
+    }
+
+    public void onAllRequestsDone() {
+        // The thumbnail requester is handling that
+        if (mThumbnailRequester != null)
+            mThumbnailRequester.onAllRequestsDone();
+    }
+
+    public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount,
+                         int totalItemCount) {
+
+
+        // Thumbnail engine must get the OnScroll updates from the list view
+        if (mThumbnailRequester != null)
+            mThumbnailRequester.onScroll(view, firstVisibleItem, visibleItemCount, totalItemCount);
+    }
+
+    public void onScrollStateChanged(AbsListView view, int scrollState) {
+
+        // Thumbnail engine must get the OnScroll updates from the list view
+        if(mThumbnailRequester != null)
+            mThumbnailRequester.onScrollStateChanged(view, scrollState);
+    }
+
+    /**
+     * According the view mode, get the common object for the adapter.
+     */
+    /**
+     * AppCompat toolbar/action-mode action buttons (e.g. the overflow "more" button) default to
+     * non-focusable while the window is in touch mode, which strands D-pad/remote navigation on
+     * TV devices that also report touch capability. Force every actually clickable descendant
+     * (the real action buttons, not their container ViewGroups) focusable, wire D-pad DOWN to
+     * bring focus back to the grid (since these system-managed views don't share the grid's key
+     * listener), and return the first one found so it can be given initial focus
+     * (nova-video-player/aos-AVP#1952, #1797).
+     */
+    private static View makeClickableDescendantsFocusable(View view, final AbsListView returnFocusTo) {
+        if (view == null) return null;
+        View firstFocusable = null;
+        if (view.isClickable()) {
+            view.setFocusable(true);
+            view.setFocusableInTouchMode(true);
+            view.setOnKeyListener(new OnKeyListener() {
+                @Override
+                public boolean onKey(View v, int keyCode, KeyEvent event) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                            && returnFocusTo != null) {
+                        if (log.isDebugEnabled())
+                            log.debug("barKey: returnFocusTo=" + returnFocusTo + " focusable=" + returnFocusTo.isFocusable()
+                                    + " selectedPosition=" + returnFocusTo.getSelectedItemPosition());
+                        boolean result = returnFocusTo.requestFocus();
+                        if (log.isDebugEnabled())
+                            log.debug("barKey: returnFocusTo.requestFocus()=" + result + " isFocused=" + returnFocusTo.isFocused()
+                                    + " selectedPositionAfter=" + returnFocusTo.getSelectedItemPosition());
+                        return result;
+                    }
+                    return false;
+                }
+            });
+            firstFocusable = view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View childFocusable = makeClickableDescendantsFocusable(group.getChildAt(i), returnFocusTo);
+                if (firstFocusable == null) firstFocusable = childFocusable;
+            }
+        }
+        return firstFocusable;
+    }
+
+    private void initList(final AbsListView list){
+        list.setOnItemClickListener(this);
+        list.setOnItemLongClickListener(this);
+        // register for context menu.
+        list.setOnCreateContextMenuListener(this);
+        list.setOnScrollListener(this);
+        list.setOnTouchListener(this);
+        list.setChoiceMode(AbsListView.CHOICE_MODE_NONE);
+
+        // Setup key listener to open extender with right key or L1 or R1 or "i"
+        list.setOnKeyListener(new OnKeyListener() {
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                // All is done on action down because it also moves the focus, hence we can't wait for action up
+
+                 
+                 /*
+                  * Work around to handle issues on focus for android 4.1
+                  * 
+                  * Sometimes it is impossible to down with the pad.
+                  * what we know :
+                  * before going to the onkey method, list should have scrolled (except when and issue occured)
+                  * so, if we are going down, the last visible item has to be focused item +1 (focus is done after the function, when  return false)
+                  * if last visible item == selected item even if this isn't the last item of the list, then the list won't scroll anymore.
+                  * So we scroll it manually.
+                  * 
+                  */
+                // D-pad UP from the top row doesn't reliably reach the bar above the grid by
+                // default focus search on some TV/remote setups, trapping remote users inside
+                // the grid (nova-video-player/aos-AVP#1952, #1797). Explicitly route focus to
+                // the multi-select action bar (CAB) when active, or otherwise to the main
+                // toolbar (whose overflow menu is how multi-select gets enabled in the first
+                // place).
+                if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_UP
+                        && getActivity() != null) {
+                    int selectedPosition = mArchosGridView.getSelectedItemPosition();
+                    int columns = (mArchosGridView instanceof GridView) ? ((GridView) mArchosGridView).getNumColumns() : 1;
+                    if (log.isDebugEnabled())
+                        log.debug("onKey: DPAD_UP selectedPosition=" + selectedPosition + " columns=" + columns
+                                + " actionModeActive=" + (mActionModeManager != null));
+                    if (selectedPosition >= 0 && selectedPosition < columns) {
+                        View barToFocus = (mActionModeManager != null)
+                                ? getActivity().getWindow().getDecorView().findViewById(androidx.appcompat.R.id.action_mode_bar)
+                                : getActivity().findViewById(R.id.main_toolbar);
+                        if (log.isDebugEnabled())
+                            log.debug("onKey: barToFocus=" + barToFocus + " childCount="
+                                    + (barToFocus instanceof ViewGroup ? ((ViewGroup) barToFocus).getChildCount() : -1));
+                        if (barToFocus != null) {
+                            View clickableTarget = makeClickableDescendantsFocusable(barToFocus, mArchosGridView);
+                            if (log.isDebugEnabled())
+                                log.debug("onKey: clickableTarget=" + clickableTarget);
+                            if (clickableTarget != null) {
+                                boolean focused = clickableTarget.requestFocus();
+                                if (log.isDebugEnabled())
+                                    log.debug("onKey: requestFocus()=" + focused + " isFocused=" + clickableTarget.isFocused()
+                                            + " focusable=" + clickableTarget.isFocusable() + " visibility=" + clickableTarget.getVisibility());
+                                if (focused) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (event.getAction() == KeyEvent.ACTION_DOWN && mArchosGridView instanceof ListView) {
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_UP && mArchosGridView.getFirstVisiblePosition() == mArchosGridView.getSelectedItemPosition() && mArchosGridView.getSelectedItemPosition() > 0) {
+
+                        mArchosGridView.setSelection(mArchosGridView.getSelectedItemPosition() - 1);
+                        return true;
+
+
+                    }
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && mArchosGridView.getLastVisiblePosition() == mArchosGridView.getSelectedItemPosition()
+                            && mArchosGridView.getSelectedItemPosition() < mArchosGridView.getCount()) {
+                        View v2 = mArchosGridView.getChildAt(mArchosGridView.getSelectedItemPosition() - mArchosGridView.getFirstVisiblePosition());
+                        int scrollTo = (v2 == null) ? 0 : v2.getTop();
+                        //we want the selected item to be at the end of the list
+                        if (mArchosGridView instanceof ListView)
+                            ((ListView) mArchosGridView).setSelectionFromTop(mArchosGridView.getSelectedItemPosition() + 1,
+                                    scrollTo);
+                        return true;
+
+
+                    }
+
+                }
+                if (event.getAction() != KeyEvent.ACTION_DOWN)
+                    return false;
+                if ((keyCode == KeyEvent.KEYCODE_BUTTON_L1) || (keyCode == KeyEvent.KEYCODE_BUTTON_R1) ||   // Nice for LUDO (even if an hidden feature)
+                        (keyCode == KeyEvent.KEYCODE_I) ||                                                // Nice for any keyboard, LUDO included
+                        ((keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) && (list instanceof GridView && (((GridView) list).getNumColumns() < 2) || list instanceof ListView)))// Right arrow is only used in list mode, can't be in grid mode
+                {
+                    View selectedView = list.getSelectedView();
+                    if (selectedView != null) {
+                        // Check that there is a visible "expander" in the selected list item
+                        View expandView = selectedView.findViewById(R.id.expanded);
+                        if ((expandView != null) && (expandView.getVisibility() == View.VISIBLE)) {
+                            if (getFileType(list.getSelectedItemPosition()) == FileExtendedInfo.FileType.SmbDir)
+                                return false;
+                            expandView.requestFocus(); //test
+                            displayInfo(list.getSelectedItemPosition());
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+        });
+
+    }
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+
+        if (log.isDebugEnabled()) log.debug("onCreateView");
+        mRootView = inflater.inflate(R.layout.browser_content_video, container, false);
+        if(mViewMode== VideoUtils.VIEW_MODE_GRID){
+            mArchosGridView = (AbsListView) mRootView.findViewById(R.id.archos_grid_view);
+            mRootView.findViewById(R.id.archos_list_view).setVisibility(View.GONE);
+        }
+        else
+        {
+            mArchosGridView = (AbsListView) mRootView.findViewById(R.id.archos_list_view);
+            mRootView.findViewById(R.id.archos_grid_view).setVisibility(View.GONE);
+        }
+        initList((AbsListView) mRootView.findViewById(R.id.archos_list_view));
+        initList((AbsListView)mRootView.findViewById(R.id.archos_grid_view));
+        // Try to restore the last view mode selected by the user for this
+        // category or use the default one.
+        int viewMode = mPreferences.getInt(getClass().getName(), getDefaultViewMode());
+        setViewMode(viewMode!=VideoUtils.VIEW_MODE_GRID_SHORT?viewMode:VideoUtils.VIEW_MODE_GRID);
+        setViewMode(viewMode);
+
+        mMenuAnchor = mRootView.findViewById(R.id.menu_anchor);
+        mSortModeSubmenu = new ActionBarSubmenu(requireContext(), inflater, mMenuAnchor);
+        mSortModeSubmenu.setListener(this);
+        return mRootView;
+    }
+
+    /**
+     * Return the default view mode. Override it when needed.
+     */
+    public int getDefaultViewMode() {
+        return VideoUtils.VIEW_MODE_LIST;
+    }
+
+    /**
+     * Returns the icon resource to display on the view-mode menu button for the given current mode.
+     * The icon represents the next mode the user will switch to. Subclasses that support a subset
+     * of modes (e.g. only LIST/DETAILS or LIST/GRID) should override this to show the correct icon.
+     * Return 0 to leave the icon unchanged.
+     */
+    protected int getViewModeMenuIcon(int currentViewMode) {
+        if (currentViewMode == VideoUtils.VIEW_MODE_LIST) return R.drawable.ic_menu_poster_mode;
+        if (currentViewMode == VideoUtils.VIEW_MODE_GRID) return R.drawable.ic_menu_details_mode2;
+        if (currentViewMode == VideoUtils.VIEW_MODE_DETAILS) return R.drawable.ic_menu_list_mode2;
+        return 0;
+    }
+
+    protected void setViewMode(int mode) {
+        Resources res = getResources();
+        if (mode != mViewMode)
+            mCommonDefaultInvalidate = true;
+        mViewMode = mode;
+        int verticalSpacing;
+        int stretchMode;
+
+        switch (mode) {
+            case VideoUtils.VIEW_MODE_LIST:
+            case VideoUtils.VIEW_MODE_DETAILS:
+            default:
+                mArchosGridView = (AbsListView) mRootView.findViewById(R.id.archos_list_view);
+                mRootView.findViewById(R.id.archos_grid_view).setVisibility(View.GONE);
+                mArchosGridView.setVisibility(View.VISIBLE);
+                if(mArchosGridView instanceof GridView)
+                    ((GridView)mArchosGridView).setNumColumns(1);
+                verticalSpacing = res.getDimensionPixelSize(R.dimen.content_list_vertical_spacing_between_items);
+                stretchMode = GridView.STRETCH_COLUMN_WIDTH;
+                break;
+            case VideoUtils.VIEW_MODE_GRID_SHORT:
+            case VideoUtils.VIEW_MODE_GRID:
+
+                mArchosGridView = (AbsListView) mRootView.findViewById(R.id.archos_grid_view);
+                mRootView.findViewById(R.id.archos_list_view).setVisibility(View.GONE);
+                mArchosGridView.setVisibility(View.VISIBLE);
+                if(mArchosGridView instanceof GridView)
+                    ((GridView)mArchosGridView).setNumColumns(GridView.AUTO_FIT);
+                verticalSpacing = res.getDimensionPixelSize(R.dimen.content_grid_vertical_spacing_between_items);
+                // setHorizontalSpacing() doesn't allow to have well-centered column. Having larger
+                // columns and making sure the items are centered in it makes it.
+                if(mArchosGridView instanceof GridView&&mode==VideoUtils.VIEW_MODE_GRID)
+                    ((GridView)mArchosGridView).setColumnWidth(res.getDimensionPixelSize(R.dimen.video_grid_column_width) +
+                            res.getDimensionPixelSize(R.dimen.content_grid_horizontal_minimal_spacing_between_items));
+                else if(mArchosGridView instanceof GridView&&mode==VideoUtils.VIEW_MODE_GRID_SHORT)
+                    ((GridView)mArchosGridView).setColumnWidth(res.getDimensionPixelSize(R.dimen.video_info_grid_column_width));
+                stretchMode = GridView.STRETCH_SPACING_UNIFORM;
+                break;
+        }
+
+        if(mArchosGridView instanceof GridView){
+            ((GridView)mArchosGridView).setVerticalSpacing(verticalSpacing);
+            ((GridView)mArchosGridView).setStretchMode(stretchMode);
+        }
+
+        // View has changed => be sure to request every thumbnail again.
+        if (mThumbnailRequester != null) {
+            mThumbnailRequester.reset();
+        }
+    }
+
+    public int getThumbnailsType() {
+        return ThumbnailEngineVideo.TYPE_FILE;
+    }
+
+    protected abstract void setupAdapter(boolean createNewAdapter);
+
+    protected abstract void setupThumbnail();
+
+    public void notifyDataSetChanged() {
+        //setPosition();
+        if (mBrowserAdapter != null)
+            mBrowserAdapter.notifyDataSetChanged();
+
+    }
+
+    /**
+     * Create a new adapter according the browser mode and link the thumbnail
+     * requester to this adapter. This method must call postBindAdapter after
+     * setting the adapter.
+     */
+    public final void bindAdapter() {
+        boolean newAdapter = mBrowserAdapter == null;
+        if (mCommonDefaultInvalidate) {
+            newAdapter = true;
+            mCommonDefaultInvalidate = false;
+        }
+        if (log.isDebugEnabled()) log.debug("bindAdapter: {}", newAdapter);
+        setupAdapter(newAdapter);
+        if (mArchosGridView.getAdapter() != mBrowserAdapter)
+            mArchosGridView.setAdapter(mBrowserAdapter);
+        if (newAdapter) {
+            setupThumbnail();
+        } else {
+            notifyDataSetChanged();
+        }
+        mArchosGridView.clearChoices();
+        postBindAdapter();
+    }
+
+    public void loading(){
+        // Hide content, show message
+        if(mArchosGridView!=null && mRootView!=null){
+            mArchosGridView.setVisibility(View.GONE);
+            View emptyView = mRootView.findViewById(R.id.empty_view);
+            if (emptyView instanceof ViewStub) {
+                final ViewStub stub = (ViewStub) emptyView;
+                emptyView = stub.inflate();
+            }
+            if (emptyView != null) {
+                emptyView.setVisibility(View.VISIBLE);
+                // Update the text of the empty view
+                TextView emptyViewText = (TextView)emptyView.findViewById(R.id.empty_view_text);
+                TextViewCompat.setTextAppearance(emptyViewText, android.R.style.TextAppearance_Medium);
+                emptyViewText.setText(R.string.loading);
+                // Check if a button is needed in the empty view
+                Button emptyViewButton = (Button)emptyView.findViewById(R.id.empty_view_button);
+                if (emptyViewButton != null)
+                    emptyViewButton.setVisibility(View.GONE);
+                View loading = mRootView.findViewById(R.id.loading);
+                if (loading != null){
+                    loading.setVisibility(View.VISIBLE);
+                }
+            }
+        }
+    }
+
+    protected void displayFailPage(){
+        // Hide content, show message
+        mArchosGridView.setVisibility(View.GONE);
+        View emptyView = mRootView.findViewById(R.id.empty_view);
+        if (emptyView instanceof ViewStub) {
+            final ViewStub stub = (ViewStub) emptyView;
+            emptyView = stub.inflate();
+        }
+
+        View loading = mRootView.findViewById(R.id.loading);
+        if (loading != null)
+            loading.setVisibility(View.GONE);
+
+        if (emptyView != null) {
+            emptyView.setVisibility(View.VISIBLE);
+            // Update the text of the empty view
+            TextView emptyViewText = (TextView)emptyView.findViewById(R.id.empty_view_text);
+            TextViewCompat.setTextAppearance(emptyViewText, android.R.style.TextAppearance_Large);
+
+            emptyViewText.setText(R.string.network_timeout);
+            // Check if a button is needed in the empty view
+            Button emptyViewButton = (Button)emptyView.findViewById(R.id.empty_view_button);
+            // Show the button and update its label
+            emptyViewButton.setVisibility(View.VISIBLE);
+            emptyViewButton.setText(getEmptyViewButtonLabel());
+            emptyViewButton.setOnClickListener(mEmptyViewButtonClickListener);
+        }
+    }
+
+    /**
+     * This method is called after setting an adapter to the view. It will
+     * display the empty message when there is no item or try to restore the
+     * previous position.
+     */
+    protected void postBindAdapter() {
+        // NOTE: This hide/show show/hide stuff should be handled by the
+        // framework.
+        // One just have to tell the ListView which is the emtyView using
+        // setEmptyView()
+
+        if (mBrowserAdapter.isEmpty()) {
+            // Hide content, show message
+            mArchosGridView.setVisibility(View.GONE);
+            View emptyView = mRootView.findViewById(R.id.empty_view);
+            if (emptyView instanceof ViewStub) {
+                final ViewStub stub = (ViewStub) emptyView;
+                emptyView = stub.inflate();
+            }
+
+            View loading = mRootView.findViewById(R.id.loading);
+            if (loading != null)
+                loading.setVisibility(View.GONE);
+
+            if (emptyView != null) {
+                // Update the text of the empty view
+                TextView emptyViewText = (TextView)emptyView.findViewById(R.id.empty_view_text);
+                TextViewCompat.setTextAppearance(emptyViewText, android.R.style.TextAppearance_Large);
+                emptyViewText.setText(getEmptyMessage());
+                // Check if a button is needed in the empty view
+                Button emptyViewButton = (Button)emptyView.findViewById(R.id.empty_view_button);
+                if (showEmptyViewButton()) {
+                    // Show the button and update its label
+                    emptyViewButton.setVisibility(View.VISIBLE);
+                    emptyViewButton.setText(getEmptyViewButtonLabel());
+                    emptyViewButton.setOnClickListener(mEmptyViewButtonClickListener);
+                }
+                else {
+                    // Hide the button
+                    emptyViewButton.setVisibility(View.GONE);
+                }
+            }
+        } else {
+            // Show content, hide message
+            mArchosGridView.setVisibility(View.VISIBLE);
+            View emptyView = mRootView.findViewById(R.id.empty_view);
+            if (emptyView != null) {
+                emptyView.setVisibility(View.GONE);
+            }
+
+            /*mSelectedPosition = Utils.restoreBestPositionWithScroll(mArchosGridView,
+                    mSelectedPosition,
+                    mFirstVisiblePosition,
+                    mScroll);*/
+            if(mListState!=null)
+                mArchosGridView.onRestoreInstanceState(mListState);
+
+        }
+        FragmentActivity activity = getActivity();
+        if (activity != null)
+            activity.invalidateOptionsMenu();
+    }
+
+    /*
+     * Subclasses can override this method to display a specific message
+     */
+    public int getEmptyMessage() {
+        return ImportState.VIDEO.isInitialImport() ? R.string.you_have_no_video_yet : R.string.you_have_no_video;
+    }
+
+    /*
+     * Subclasses can override this method to set a specific label to the empty view button
+     */
+    public int getEmptyViewButtonLabel() {
+        return R.string.refresh;
+    }
+
+    /*
+     * Subclasses can override this method if they want a button to be shown in the empty view
+     */
+    public boolean showEmptyViewButton() {
+        return false;
+    }
+
+    protected View.OnClickListener mEmptyViewButtonClickListener = new View.OnClickListener() {
+        public void onClick(View v) {
+            // The user clicked on the empty view button.
+            // This button is only used so far to start searching infos online.
+            if(!onEmptyviewButtonClick()) {
+                Intent intent = new Intent(Intent.ACTION_MAIN);
+                intent.setClass(mContext, AutoScraperActivity.class);
+                startActivity(intent);
+            }
+        }
+    };
+
+    protected boolean onEmptyviewButtonClick(){
+        return false;
+    }
+
+    protected boolean mMultiplePositionEnabled = false;
+
+
+    /**
+     * Check the file type at this position
+     */
+    abstract public FileExtendedInfo.FileType getFileType(int position);
+
+    /**
+     * Return the number of files (including the folders!)
+     * @return
+     */
+    abstract public int getFileAndFolderSize();
+
+
+    public int getFileSize(){
+        return getFileAndFolderSize()-getFirstFilePosition();
+    }
+
+    /**
+     * Return the position of first file (in case there is a header)
+     * @return
+     */
+    abstract public int getFirstFilePosition();
+
+    /**
+     * Get the File at position.
+     */
+    abstract public File getFile(int position);
+
+    /**
+     * Get the FilePath at position.
+     */
+    abstract public String getFilePath(int position);
+
+    /**
+     * Return the Uri of the video file at position.
+     */
+    abstract public Uri getUriFromPosition(int position);
+    public Uri getRealPathUriFromPosition(int position){
+        return getUriFromPosition(position);
+    }
+
+    @Override
+    public void startActivityWithResultListener(Intent intent) {
+        playLauncher.launch(intent);
+    }
+
+    public void showSubsRetrievingDialog(SubtitleManager engine){
+        mDialogRetrieveSubtitles = new DialogRetrieveSubtitles();
+        mDialogRetrieveSubtitles.show(getParentFragmentManager(), null);
+        mDialogRetrieveSubtitles.setDownloader(engine);
+
+    }
+    public void hideSubsRetrievingDialog(){
+        if(mDialogRetrieveSubtitles!=null&&mDialogRetrieveSubtitles.isShowing())
+            mDialogRetrieveSubtitles.dismiss();
+        mDialogRetrieveSubtitles=null;
+    }
+
+
+    public abstract void displayInfo(int position) ;
+
+
+
+    public boolean onTouch(View v, MotionEvent event) {
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            // Remember where the user clicked
+            mTouchX = (int)event.getX();
+            mTouchY = (int)event.getY();
+        }
+        return false;
+    }
+
+    protected boolean isClickValid(View v) {
+        boolean validClick = true;
+
+        if (mViewMode == VideoUtils.VIEW_MODE_LIST || mViewMode == VideoUtils.VIEW_MODE_DETAILS) {
+            // Check if the (+) symbol is currently visible
+            View expandSymbol = v.findViewById(R.id.expanded);
+            if (expandSymbol != null && expandSymbol.getVisibility() == View.VISIBLE) {
+                // The (+) symbol is visible => check its position
+                int expandSymbolX = v.getWidth() - expandSymbol.getWidth();
+                if (mViewMode == VideoUtils.VIEW_MODE_LIST) {
+                    // List mode => ignore clicks above, below and to the right of the (+) symbol
+                    if (mTouchX > expandSymbolX) {
+                        return false;
+                    }
+                }
+                else {
+                    int expandSymbolY = v.getHeight() - expandSymbol.getHeight();
+                    if (mTouchX > expandSymbolX && mTouchY > expandSymbolY) {
+                        // Detailed list mode => ignore clicks below and to the right of the (+) symbol
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return validClick;
+    }
+
+    public boolean isItemClickable(int position) {
+        return true;
+    }
+    public void setItemChecked(int position){
+
+        mArchosGridView.setItemChecked(position, !mArchosGridView.isItemChecked(position));
+
+    }
+    @Override
+    public boolean onItemLongClick(AdapterView parent, View v, int position, long id) {
+        return mMultiplePositionEnabled; // disable context menu when multiple selection is enabled
+
+    }
+    // The user clicked on an item of the list
+    public void onItemClick(AdapterView parent, View v, int position, long id) {
+
+
+        if(mMultiplePositionEnabled){
+            mIsClickValid = false;
+            if(mActionModeManager!=null)
+                mActionModeManager.invalidateActionBar();
+            return;
+        }
+        mSelectedPosition=position;
+        if (!isItemClickable(position)) {
+            return;
+        }
+
+
+        mIsClickValid = isClickValid(v);
+        if (mIsClickValid) {
+            mThumbnailEngine.cancelPendingRequestsForThisListener(this);
+        }
+    }
+
+
+    // This will display the menu with enabled actions for the file.
+    @Override
+    public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
+        super.onCreateContextMenu(menu, v, menuInfo);
+
+    }
+
+    protected enum UpdateDbXmlType {
+        HIDE,
+        BOOKMARK,
+        RESUME,
+        TRAKT_RESUME,
+        TRAKT_SEEN
+    }
+
+    abstract protected boolean updateDbXml(int position, UpdateDbXmlType type, int valuel);
+
+    protected void syncTrakt(final int position) {
+
+    }
+
+    public void markAsRead(final int position, boolean updateDb, boolean updateRemoteXml) {
+        final boolean dbUpdated = updateDbXml(position, UpdateDbXmlType.RESUME, PlayerActivity.LAST_POSITION_END);
+        if (Trakt.isTraktV2Enabled(mContext, mPreferences)) {
+            if (dbUpdated) {
+                syncTrakt(position);
+            }
+            Toast.makeText(mContext, R.string.trakt_toast_syncing, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    public void markAsNotRead(final int position, boolean updateDb, boolean updateRemoteXml) {
+        final boolean dbUpdated = updateDbXml(position, UpdateDbXmlType.RESUME, -1);
+        if (Trakt.isTraktV2Enabled(mContext, mPreferences)) {
+            if (dbUpdated) {
+                updateDbXml(position, UpdateDbXmlType.TRAKT_SEEN, Trakt.TRAKT_DB_UNMARK);
+                syncTrakt(position);
+            }
+            Toast.makeText(mContext, R.string.trakt_toast_syncing, Toast.LENGTH_SHORT).show();
+        }
+    }
+    public void enableMultiple(int position, boolean toggle){
+        if(mActionModeManager==null)
+            mActionModeManager = new MultipleSelectionManager(this, mArchosGridView, mBrowserAdapter);
+        mMultiplePositionEnabled = true;
+        mActionModeManager.setActionBar(((AppCompatActivity)getActivity()).startSupportActionMode(mActionModeManager));
+        mArchosGridView.setChoiceMode(AbsListView.CHOICE_MODE_MULTIPLE);
+        if(toggle)
+            setItemChecked(position);
+        getActivity().invalidateOptionsMenu();
+
+    }
+    public void disableMultiple(){
+        mArchosGridView.clearChoices();
+        mMultiplePositionEnabled = false;
+        mActionModeManager = null;
+        mArchosGridView.requestLayout();
+        mArchosGridView.post(new Runnable() {
+            @Override
+            public void run() {
+                //needed because of a bug when setting choice mode before choices are cleared
+                mArchosGridView.setChoiceMode(AbsListView.CHOICE_MODE_NONE);
+                mArchosGridView.invalidateViews();
+            }
+        });
+        getActivity().invalidateOptionsMenu();
+    }
+    //return whether we need to download remote subs or not, sometimes we know that we don't have subs
+    // this can't be a parameter of startvideo because otherwise we won't be able to use it in context menu
+    public boolean shouldDownloadRemoteSubtitle(int position){
+        return true;
+    }
+
+    /**
+     *  ask user to check is the selected file has to be deleted
+     *
+     * @param isParentFolder if we are deleting a parent folder of a video file previously deleted
+     * @param uri needed to delete a parent folder, other wise, can be null
+     */
+    public void showConfirmDeleteDialog(final boolean isParentFolder, final List<Uri> uri) {
+
+        AlertDialog.Builder b = new AlertDialog.Builder(getActivity()).setTitle("");
+        if(!isParentFolder)
+            b.setIcon(R.drawable.filetype_new_video);
+        else
+            b.setIcon(R.drawable.filetype_new_folder);
+
+        if(!isParentFolder)
+            b.setMessage(R.string.confirm_delete);
+        else
+            b.setMessage(R.string.confirm_delete_parent_folder);
+        mDialogDelete =b.setNegativeButton(R.string.no, null)
+                .setPositiveButton(R.string.yes, new OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        if (mActionModeManager != null) {
+                            mActionModeManager.destroyActionBar();
+                        }
+                        if (!isParentFolder)
+                            startDeletingDialog(uri);
+                        else {
+                            mDelete = new Delete(Browser.this, getActivity());
+                            if (log.isDebugEnabled()) log.debug("showConfirmDeleteDialog: update deleteUrisList with {}", uri);
+                            deleteUrisList = uri;
+                            mDelete.deleteFolder(uri.get(0));
+                        }
+
+                    }
+                }).create();
+        mDialogDelete.show();
+    }
+
+    /**
+     * Start searching the whole database if folderPath is null or empty Start
+     * searching inside the provided folder otherwise
+     */
+    protected void startOnlineSearchForFolder(String folderPath) {
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.setClass(getActivity(), AutoScraperActivity.class);
+        if (folderPath != null && folderPath.length() > 0) {
+            intent.setData(Uri.parse(folderPath));
+        }
+        startActivity(intent);
+    }
+
+    protected void startSubtitlesWizard(String videoPath) {
+        if (videoPath != null && videoPath.length() > 0) {
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.setClass(getActivity(), SubtitlesWizardActivity.class);
+            intent.setData(Uri.parse(videoPath));
+            startActivity(intent);
+        }
+    }
+
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        boolean ret = false;
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                // if (isChild() == true) {
+                // final VideoBrowserActivity parent = (VideoBrowserActivity)
+                // getParent();
+                // parent.launchGlobalResume();
+                // }
+                ret = true;
+        }
+
+        // if (!ret)
+        // ret = super.onKeyUp(keyCode, event);
+
+        return ret;
+    }
+
+    public boolean shouldEnableMultiSelection(){
+        return true;
+    }
+
+    protected MultipleSelectionManager mActionModeManager ;
+
+    public void onSubmenuItemSelected(ActionBarSubmenu submenu, int position, long itemId) {
+        switch (position) {
+            case SUBMENU_ITEM_LIST_INDEX:
+                if (mViewMode != VideoUtils.VIEW_MODE_LIST) {
+                    applySelectedViewMode(VideoUtils.VIEW_MODE_LIST);
+                }
+                break;
+
+            case SUBMENU_ITEM_GRID_INDEX:
+                if (mViewMode != VideoUtils.VIEW_MODE_GRID) {
+                    applySelectedViewMode(VideoUtils.VIEW_MODE_GRID);
+                }
+                break;
+
+            case SUBMENU_ITEM_DETAILS_INDEX:
+                if (mViewMode != VideoUtils.VIEW_MODE_DETAILS) {
+                    applySelectedViewMode(VideoUtils.VIEW_MODE_DETAILS);
+                }
+                break;
+        }
+    }
+
+    protected int getSubmenuItemIndex(int viewMode) {
+        switch (mViewMode) {
+            case VideoUtils.VIEW_MODE_GRID:
+                return SUBMENU_ITEM_GRID_INDEX;
+            case VideoUtils.VIEW_MODE_DETAILS:
+                return SUBMENU_ITEM_DETAILS_INDEX;
+            case VideoUtils.VIEW_MODE_LIST:
+            default:
+                return SUBMENU_ITEM_LIST_INDEX;
+        }
+    }
+
+    protected void setPosition() {
+        mSelectedPosition = mArchosGridView.getSelectedItemPosition()>=0?mArchosGridView.getSelectedItemPosition():mArchosGridView.getFirstVisiblePosition();
+        mFirstVisiblePosition = mArchosGridView.getFirstVisiblePosition();
+        View v = mArchosGridView.getChildAt(mSelectedPosition-mFirstVisiblePosition);
+        mScroll = (v == null) ? 0 : v.getTop();
+
+    }
+
+    protected boolean hasSavedPosition() {
+        return mSelectedPosition > 0 || mFirstVisiblePosition > 0 ;
+    }
+
+    protected void applySelectedViewMode(int newMode) {
+        // Save the current position variables before changing the view mode
+        setPosition();
+        mSelectedPosition = mArchosGridView.getFirstVisiblePosition();
+
+        setViewMode(newMode);
+        bindAdapter();
+        // setViewMode() hides the previously shown AbsListView (archos_list_view or
+        // archos_grid_view) and shows the other one, but never moves focus onto it: whatever
+        // had focus before (e.g. the view-mode menu item) is left as-is once the old view
+        // becomes GONE. On D-pad/remote navigation this left mArchosGridView in an
+        // inconsistent focus state, so the custom key routing used to enter/exit the
+        // multi-select action bar (which always operates on the current mArchosGridView)
+        // became unreliable after switching between grid and list mode
+        // (nova-video-player/aos-AVP#1952, #1797).
+        mArchosGridView.requestFocus();
+    }
+
+    @Override
+    public void onVideoFileRemoved(Uri videoFile, boolean askForFolderRemoval, Uri folder) {
+        if (log.isDebugEnabled()) log.debug("onVideoFileRemoved {}, folderRemoval {}, folder {}", videoFile, askForFolderRemoval, folder);
+        if(askForFolderRemoval) {
+            List<Uri> toDelete = new ArrayList<>();
+            toDelete.add(folder);
+            showConfirmDeleteDialog(true, toDelete);
+        }
+    }
+
+    @Override
+    public void onDeleteSuccess() {
+        if (log.isDebugEnabled()) log.debug("onDeleteSuccess: refresh list");
+        mDialogDeleting.dismiss();
+        refresh();
+    }
+
+    @Override
+    public void onDeleteVideoFailed(Uri videoFile) {
+        if (log.isDebugEnabled()) log.debug("onDeleteVideoFailed {}", ((videoFile != null) ? videoFile.getPath() : null));
+        Toast.makeText(getActivity(), R.string.delete_error,Toast.LENGTH_LONG).show();
+        mDialogDeleting.dismiss();
+    }
+
+
+    @Override
+    public void onFolderRemoved(final Uri folder) {
+        if (log.isDebugEnabled()) log.debug("onFolderRemoved {}", folder);
+        if(isAdded()) {
+            Toast.makeText(getActivity(), R.string.directory_deleted, Toast.LENGTH_SHORT).show();
+        }
+    }
+    public void startDeletingDialog(List<Uri> uriToDelete){
+        if (uriToDelete == null || uriToDelete.isEmpty()) {
+            log.error("startDeletingDialog: uriToDelete list is empty or null");
+            return;
+        }
+        mArchosGridView.getCheckedItemPosition();
+        mDialogDeleting = new DeleteDialog();
+        mDialogDeleting.show(getParentFragmentManager(), null);
+        mDelete = new Delete(this,getActivity());
+        if (log.isDebugEnabled()) log.debug("startDeletingDialog: update deleteUrisList with {}", Arrays.toString(uriToDelete.toArray()));
+        deleteUrisList = uriToDelete;
+        if(uriToDelete.size()>1) {
+            mDelete.startMultipleDeleteProcess(uriToDelete);
+        } else {
+            mDelete.startDeleteProcess(uriToDelete.get(0));
+        }
+    }
+
+    /**
+     * refresh list
+     */
+    protected abstract void refresh();
+
+    //download with metafile2
+    public void startDownloadingVideo(List<Uri> uris) {
+        if(FileManagerService.fileManagerService==null) {
+            if (log.isDebugEnabled()) log.debug("startDownloadingVideo: binding FileManagerService since FileManagerService.fileManagerService==null");
+            isFileManagerServiceBound = getContext().bindService(new Intent(getContext(), FileManagerService.class), new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder service) {
+                    if (log.isDebugEnabled()) log.debug("startDownloadingVideo: FileManagerService connected, launching PasteDialog and copy of {}", uris);
+                    FileManagerService.fileManagerService.copyUri(uris, Uri.fromFile(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)));
+                    showPasteDialog();
+                }
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    if (log.isDebugEnabled()) log.debug("startDownloadingVideo: FileManagerService disconnected");
+                }
+            }, Context.BIND_AUTO_CREATE);
+        } else {
+            if (log.isDebugEnabled()) log.debug("startDownloadingVideo: FileManagerService exists we should not be there..., download video and show paste dialog...");
+            showPasteDialog();
+            FileManagerService.fileManagerService.copyUri(uris, Uri.fromFile(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)));
+        }
+    }
+
+    protected void showPasteDialog(){
+        mPasteDialog = new Paste(getActivity());
+        mPasteDialog.show();
+    }
+
+    protected String getExtension(String filename) {
+        if (filename == null)
+            return null;
+        int dotPos = filename.lastIndexOf('.');
+        if (dotPos >= 0 && dotPos < filename.length()) {
+            return filename.substring(dotPos + 1).toLowerCase(Locale.ROOT);
+        }
+        return null;
+    }
+}

@@ -1,0 +1,400 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define LOG_TAG "avos_media_metadata_retriever"
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "jni.h"
+
+#include "libavos.h"
+
+int jniThrowException(C_JNIEnv* env, const char* className, const char* msg);
+int jniGetFDFromFileDescriptor(C_JNIEnv* env, jobject fileDescriptor);
+
+static const avos_mr_handle_t *avos = NULL;
+static const avos_metadata_handle_t *avos_metadata = NULL;
+
+static struct {
+    jfieldID    handle;
+} mr_fields;
+
+static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+
+int
+register_avosmediametadataretriever(JNIEnv *env)
+{
+    jclass clazz;
+
+    clazz = (*env)->FindClass(env, "com/archos/medialib/AvosMediaMetadataRetriever");
+    if (!clazz)
+        return -1;
+    mr_fields.handle = (*env)->GetFieldID(env, clazz, "mMediaMetadataRetrieverHandle", "J");
+    if (!mr_fields.handle)
+        return -1;
+
+    avos = avos_mr_get_handle();
+    avos_metadata = avos_metadata_get_handle();
+    return 0;
+}
+
+int
+unregister_avosmediametadataretriever(JNIEnv *env)
+{
+    return 0;
+}
+
+static inline int handle_ret(JNIEnv *env, int ret, const char *cmd)
+{
+    if (ret == AVOS_ERR_OK) {
+        return ret;
+    } else {
+        char err_msg[256];
+
+        snprintf(err_msg, 256, "%s returned %s", cmd,
+          ret == AVOS_ERR ? "AVOS_ERR" : "AVOS_ERR_CRITICAL");
+        jniThrowException(env, "java/lang/IllegalStateException", err_msg);
+        return ret;
+    }
+}
+
+#define CHECK(cmd) handle_ret(env, (cmd), #cmd)
+
+// The Java field owns a context. Leases keep it alive through the last JNI
+// copy, while operations on a single retriever are serialized independently.
+typedef struct mr_context {
+    avos_mr_t *mr;
+    pthread_mutex_t operation;
+    pthread_cond_t idle;
+    unsigned users; // protected by mtx
+    int closing;
+} mr_context;
+
+static void put_mr(mr_context **lease)
+{
+    mr_context *ctx = *lease;
+    if (!ctx) return;
+    pthread_mutex_unlock(&ctx->operation);
+    pthread_mutex_lock(&mtx);
+    if (--ctx->users == 0) pthread_cond_broadcast(&ctx->idle);
+    pthread_mutex_unlock(&mtx);
+}
+
+static mr_context *acquire_mr(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&mtx);
+    mr_context *ctx = (mr_context *)(intptr_t)(*env)->GetLongField(env, thiz, mr_fields.handle);
+    if (ctx) ctx->users++;
+    pthread_mutex_unlock(&mtx);
+    if (ctx) {
+        pthread_mutex_lock(&ctx->operation);
+        if (!__atomic_load_n(&ctx->closing, __ATOMIC_ACQUIRE)) return ctx;
+        put_mr(&ctx);
+    }
+    jniThrowException(env, "java/lang/IllegalStateException", "retriever released");
+    return NULL;
+}
+
+#define ACQUIRE_MR() \
+    mr_context *lease __attribute__((cleanup(put_mr))) = acquire_mr(env, thiz); \
+    avos_mr_t *mr = lease ? lease->mr : NULL
+
+void
+Java_com_archos_medialib_AvosMediaMetadataRetriever_create(JNIEnv *env, jobject thiz, jobject weak_thiz)
+{
+    mr_context *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) goto err;
+    if (!avos || !(ctx->mr = avos->create())) { free(ctx); goto err; }
+    pthread_mutex_init(&ctx->operation, NULL);
+    pthread_cond_init(&ctx->idle, NULL);
+    pthread_mutex_lock(&mtx);
+    (*env)->SetLongField(env, thiz, mr_fields.handle, (jlong)(intptr_t)ctx);
+    pthread_mutex_unlock(&mtx);
+    return;
+err:
+    jniThrowException(env, "java/lang/IllegalStateException", "can't create mr");
+}
+
+void
+Java_com_archos_medialib_AvosMediaMetadataRetriever_nativeRelease(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&mtx);
+    mr_context *ctx = (mr_context *)(intptr_t)(*env)->GetLongField(env, thiz, mr_fields.handle);
+    if (!ctx) { pthread_mutex_unlock(&mtx); return; }
+    (*env)->SetLongField(env, thiz, mr_fields.handle, 0);
+    __atomic_store_n(&ctx->closing, 1, __ATOMIC_RELEASE);
+    avos->cancel(ctx->mr);
+    while (ctx->users) pthread_cond_wait(&ctx->idle, &mtx);
+    pthread_mutex_unlock(&mtx);
+    avos->destroy(ctx->mr);
+    pthread_mutex_destroy(&ctx->operation);
+    pthread_cond_destroy(&ctx->idle);
+    free(ctx);
+}
+
+static void keys_values_free(char **entries)
+{
+    char **entry = entries;
+    if (!entry)
+        return;
+    while (*entry) {
+        free(*entry);
+        entry++;
+    }
+    free(entries);
+}
+
+static int keys_values_fill(JNIEnv *env, jobjectArray keys, jobjectArray values,
+        char ***p_keys, char ***p_values)
+{
+    int i;
+    int nb_pairs;
+    char **c_keys = NULL;
+    char **c_values = NULL;
+
+    *p_keys = NULL;
+    *p_values = NULL;
+    if (keys == NULL || values == NULL)
+        return 0;
+    nb_pairs = (*env)->GetArrayLength(env, keys);
+    if (nb_pairs != (*env)->GetArrayLength(env, values))
+        return -1;
+    c_keys = calloc(nb_pairs + 1, sizeof(char *));
+    c_values = calloc(nb_pairs + 1, sizeof(char *));
+    if (!c_keys || !c_values)
+        goto err;
+    for (i = 0; i < nb_pairs; i++) {
+        jstring key = (jstring)(*env)->GetObjectArrayElement(env, keys, i);
+        jstring value = (jstring)(*env)->GetObjectArrayElement(env, values, i);
+        const char *c_key;
+        const char *c_value;
+        if (!key || !value)
+            goto err;
+        c_key = (*env)->GetStringUTFChars(env, key, NULL);
+        c_value = (*env)->GetStringUTFChars(env, value, NULL);
+        if (!c_key || !c_value) {
+            if (c_key)
+                (*env)->ReleaseStringUTFChars(env, key, c_key);
+            if (c_value)
+                (*env)->ReleaseStringUTFChars(env, value, c_value);
+            (*env)->DeleteLocalRef(env, key);
+            (*env)->DeleteLocalRef(env, value);
+            goto err;
+        }
+        c_keys[i] = strdup(c_key);
+        c_values[i] = strdup(c_value);
+        (*env)->ReleaseStringUTFChars(env, key, c_key);
+        (*env)->ReleaseStringUTFChars(env, value, c_value);
+        (*env)->DeleteLocalRef(env, key);
+        (*env)->DeleteLocalRef(env, value);
+        if (!c_keys[i] || !c_values[i])
+            goto err;
+    }
+    *p_keys = c_keys;
+    *p_values = c_values;
+    return 0;
+err:
+    keys_values_free(c_keys);
+    keys_values_free(c_values);
+    return -1;
+}
+
+void
+Java_com_archos_medialib_AvosMediaMetadataRetriever_nativeSetDataSource(JNIEnv *env, jobject thiz, jstring path, jobjectArray keys, jobjectArray values)
+{
+    ACQUIRE_MR();
+    if (!mr)
+        return;
+
+    if (path == NULL) {
+        jniThrowException(env, "java/lang/IllegalArgumentException", "path is NULL");
+        return;
+    }
+
+    const char *c_path = (*env)->GetStringUTFChars(env, path, NULL);
+    if (c_path == NULL) {
+        return;
+    }
+    char **c_keys = NULL;
+    char **c_values = NULL;
+    if (keys_values_fill(env, keys, values, &c_keys, &c_values) != 0) {
+        (*env)->ReleaseStringUTFChars(env, path, c_path);
+        jniThrowException(env, "java/lang/IllegalArgumentException", "invalid headers");
+        return;
+    }
+    CHECK(avos->setdatasource(mr, c_path, (const char **)c_keys, (const char **)c_values));
+    keys_values_free(c_keys);
+    keys_values_free(c_values);
+    (*env)->ReleaseStringUTFChars(env, path, c_path);
+}
+
+// Keep the entry point for Java callers built before the proxy-owner wrapper.
+void
+Java_com_archos_medialib_AvosMediaMetadataRetriever_setDataSource(JNIEnv *env, jobject thiz, jstring path, jobjectArray keys, jobjectArray values)
+{
+    Java_com_archos_medialib_AvosMediaMetadataRetriever_nativeSetDataSource(env, thiz, path, keys, values);
+}
+
+void
+Java_com_archos_medialib_AvosMediaMetadataRetriever_setDataSourceFD(JNIEnv *env, jobject thiz, jobject fileDescriptor, jlong offset, jlong length)
+{
+    ACQUIRE_MR();
+    if (!mr)
+        return;
+
+    if (fileDescriptor == NULL) {
+        jniThrowException(env, "java/lang/IllegalArgumentException", "fileDescriptor is NULL");
+        return;
+    }
+    int fd = jniGetFDFromFileDescriptor(env, fileDescriptor);
+    CHECK(avos->setdatasource_fd(mr, fd, offset, length));
+}
+
+jobject
+Java_com_archos_medialib_AvosMediaMetadataRetriever_extractMetadata(JNIEnv *env, jobject thiz, jint keyCode)
+{
+    const char *str;
+    ACQUIRE_MR();
+    if (!mr) return NULL;
+    str = avos->extractmetadata(mr, keyCode);
+    if (str)
+        return (*env)->NewStringUTF(env, str);
+    else
+        return NULL;
+}
+
+jbyteArray
+Java_com_archos_medialib_AvosMediaMetadataRetriever_getMetadata(JNIEnv *env, jobject thiz)
+{
+    metadata_buffer_t *buffer = NULL;
+    ACQUIRE_MR();
+    jbyteArray array = NULL;
+    if (!mr) return NULL;
+
+    if (avos->getmetadata(mr, &buffer) || !buffer)
+        return NULL;
+
+    array =  (*env)->NewByteArray(env, avos_metadata->size(buffer));
+    if (!array)
+	    goto end;
+
+    jbyte* bytes = (*env)->GetByteArrayElements(env, array, NULL);
+    if (!bytes)
+	    goto end;
+
+    memcpy(bytes, avos_metadata->data(buffer), avos_metadata->size(buffer));
+
+    (*env)->ReleaseByteArrayElements(env, array, bytes, 0);
+end:
+    if (buffer)
+	    avos_metadata->destroy(&buffer);
+    return array;
+}
+
+#define ANDROID_THUMB_WIDTH 512
+
+jobject
+Java_com_archos_medialib_AvosMediaMetadataRetriever_nativeGetFrameAtTime(JNIEnv *env, jobject thiz, jlong timeUs, jint option)
+{
+    avos_bgra_bitmap_t *frame = NULL;
+    ACQUIRE_MR();
+    jobject bitmap;
+    float scale;
+    uint32_t scaled_height;
+
+    if (!mr) return NULL;
+    if (timeUs < -1 || timeUs / 1000 > INT32_MAX) {
+        jniThrowException(env, "java/lang/IllegalArgumentException", "thumbnail time out of range");
+        return NULL;
+    }
+    if (CHECK(avos->getframe(mr, timeUs == -1 ? -1 : timeUs / 1000, &frame)) != AVOS_ERR_OK)
+        return NULL;
+    if (!frame)
+        return NULL;
+
+    // Validate frame dimensions to prevent division by zero and overflow
+    if (frame->width == 0 || frame->height == 0) {
+        LOGE("nativeGetFrameAtTime: invalid frame dimensions %dx%d", frame->width, frame->height);
+        free(frame);
+        return NULL;
+    }
+
+    // Limit frame dimensions to reasonable values (max 8K)
+    if (frame->width > 7680 || frame->height > 4320) {
+        LOGE("nativeGetFrameAtTime: frame dimensions too large %dx%d", frame->width, frame->height);
+        free(frame);
+        return NULL;
+    }
+
+    scale = (float)ANDROID_THUMB_WIDTH / (float)frame->width;
+    scaled_height = (uint32_t)(frame->height * scale);
+
+    // Validate scaled height to prevent overflow and excessive memory allocation
+    // Limit to reasonable thumbnail size (max 4096 pixels in any dimension)
+    if (scaled_height == 0 || scaled_height > 4096) {
+        LOGE("nativeGetFrameAtTime: invalid scaled height %u (original %dx%d, scale %.2f)",
+             scaled_height, frame->width, frame->height, scale);
+        free(frame);
+        return NULL;
+    }
+
+    bitmap = create_bitmap(env, frame, ANDROID_THUMB_WIDTH, scaled_height);
+
+    // Check for exceptions thrown during bitmap creation
+    if ((*env)->ExceptionCheck(env)) {
+        LOGE("nativeGetFrameAtTime: exception occurred during bitmap creation");
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        free(frame);
+        return NULL;
+    }
+
+    free(frame);
+    return bitmap;
+}
+
+jbyteArray
+Java_com_archos_medialib_AvosMediaMetadataRetriever_getEmbeddedPicture(JNIEnv *env, jobject thiz, jint pictureType)
+{
+    LOGV("getEmbeddedPicture: %d", pictureType);
+    ACQUIRE_MR();
+    avos_apic_t *apic = NULL;
+    jbyteArray array;
+
+    if (!mr) return NULL;
+    if (CHECK(avos->getapic(mr, &apic)) != AVOS_ERR_OK) return NULL;
+    if (!apic)
+        return NULL;
+
+    array = (*env)->NewByteArray(env, apic->size);
+    if (!array) {  // OutOfMemoryError exception has already been thrown.
+        LOGE("getEmbeddedPicture: OutOfMemoryError is thrown.");
+    } else {
+        jbyte* bytes = (*env)->GetByteArrayElements(env, array, NULL);
+        if (bytes != NULL) {
+            memcpy(bytes, apic->data, apic->size);
+            (*env)->ReleaseByteArrayElements(env, array, bytes, 0);
+        }
+    }
+    free(apic);
+
+    // No need to delete mediaAlbumArt here
+    return array;
+}

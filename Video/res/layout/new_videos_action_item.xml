@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    style="?attr/actionButtonStyle"
+    android:layout_width="wrap_content"
+    android:layout_height="match_parent"
+    android:layout_gravity="center"
+    android:clickable="true"
+    android:focusable="true"
+    android:background="?attr/actionBarItemBackground"
+    android:id="@+id/new_videos_action_button" >
+
+    <ImageView
+        android:id="@+id/new_videos_icon"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:adjustViewBounds="true"
+        app:srcCompat="@drawable/ic_menu_video_new"
+        android:scaleType="fitCenter"
+        android:contentDescription="@string/new_and_unwatched_videos" />
+
+    <TextView
+        android:id="@+id/new_videos_textview"
+        style="@style/TextAppearance.AppCompat.Widget.ActionBar.Menu"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_vertical"
+        android:gravity="center_vertical" />
+
+</LinearLayout>

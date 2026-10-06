@@ -1,0 +1,37 @@
+# R8 obfuscates eligible third-party code. The Nova package rules below retain
+# readable names in user-provided logcat reports.
+
+-keepattributes SourceFile,LineNumberTable,Exceptions,InnerClasses,Signature,EnclosingMethod,RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations
+
+#### Application & project internal classes ####
+-keep class com.archos.mediacenter.** { *; }
+-keep class org.courville.nova.** { *; }
+
+#### Serializable ####
+-keepclassmembers class * implements java.io.Serializable {
+    static final long serialVersionUID;
+    private static final java.io.ObjectStreamField[] serialPersistentFields;
+    private void writeObject(java.io.ObjectOutputStream);
+    private void readObject(java.io.ObjectInputStream);
+    java.lang.Object writeReplace();
+    java.lang.Object readResolve();
+}
+
+#### Suppress warnings from optional/platform-specific third-party libraries ####
+-dontwarn javax.**
+-dontwarn com.sun.**
+-dontwarn org.apache.**
+-dontwarn org.seamless.**
+-dontwarn org.eclipse.jetty.**
+-dontnote org.eclipse.jetty.**
+-dontwarn okhttp3.internal.platform.ConscryptPlatform
+-dontwarn org.ietf.**
+-dontwarn org.newsclub.net.unix.AFUNIXServerSocketChannel
+-dontwarn org.newsclub.net.unix.AFUNIXSocketAddress
+-dontwarn org.newsclub.net.unix.AFUNIXSocketChannel
+-dontwarn sun.security.x509.X509Key
+-dontwarn org.bouncycastle.crypto.DefaultBufferedBlockCipher
+-dontwarn org.bouncycastle.crypto.modes.CBCModeCipher
+-dontwarn org.bouncycastle.crypto.modes.CTRModeCipher
+-dontwarn org.osgi.framework.**
+-dontwarn org.osgi.service.**

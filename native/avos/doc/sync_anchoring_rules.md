@@ -1,0 +1,338 @@
+# AVOS Sync & Anchoring Rules
+
+## Introduction
+
+- **`venc_put_time` (TS)**: The last TS value passed into the video sink as the anchor point.
+- **`venc_ref_time` (WC)**: The monotonic clock sample taken when `venc_put_time` was set. Together, the pair provides the freshness and drift reference used by the current timed-release scheduler.
+- **`heard_audio_ts` (TS)**: The audio time that is estimated to be audible at the speakers. Derivation is **centralized** in `stream_get_heard_audio_ts()`.
+  - **Steady State**: `heard_audio_ts = audio_time - chain_delay_ts`, where `chain_delay_ts` is `smoothed_av_delay` if valid.
+  - **AudioTrack PlaybackParams speed epoch**: for plain PCM hardware speed changes, `heard_audio_ts` is temporarily derived from a playhead checkpoint: `epoch_heard_ts + RST_TO_TS_DELTA(frames_delta * 1000 / rate)`.
+  - **Mode 2 passthrough**: `audio_time` advances from submitted compressed packet duration. The raw heard frontier subtracts normalized passthrough latency, and a bounded wall-clock interpolator advances heard time between coarse write batches. On the validated raw AC3/44.1 kHz profile, a trusted asynchronous `AudioTimestamp` observation bounds this centralized clock to actual Android presentation progress.
+- **Monotonic clock variables (WC)**: `CLOCK_MONOTONIC` timestamps are used for wall‑clock pacing because they never jump due to system time changes. They provide stable elapsed‑time deltas for TS↔WC anchoring.
+- **`timeline_map_apply()`**: Installs a single piecewise‑linear mapping between RST and TS at a given anchor `(rst_anchor, ts_anchor, speed)`. Absolute conversions: `ts = ts_anchor + (rst - rst_anchor) / speed`, `rst = rst_anchor + (ts - ts_anchor) * speed`. Duration conversions use `RST_TO_TS_DELTA` / `TS_TO_RST_DELTA`.
+- **`smoothed_av_delay`**: A low‑pass filtered estimate of audio‑video offset (TS) used as a stable proxy for the audible delay. When it is invalid, fall back to `stream_sync_av_delay()`.
+- **Best delay provider**: Audio delay is chosen by a single provider: use stable `AudioTrack.getTimestamp()` when available; otherwise fall back to playback‑head latency, then static latency.
+- **Latency terminology**: geometry/app latency is local AudioTrack buffer
+  geometry. Pipeline latency is the conservative platform estimate
+  `max(track_latency, system_latency + app_latency)`. Static latency means the
+  selected fallback delay for the current path; it is not necessarily raw
+  `AudioTrack.getLatency()`. See `doc/delay_estimation.md`.
+- **`put_time_mode`**: Enabled when a sink exposes `put_time()`. In this mode the sync layer keeps audio as the master (via `heard_audio_ts`) but does not disable sync on early frames; the sink owns TS↔WC pacing.
+
+## Time Domain Anchors (Single per Sink)
+
+The current `sfdec2` implementation is the restored platform-timed release path
+(historically `android_sync=1`); there is no runtime mode-0 branch. It always
+supplies `render_ts_ns` to MediaCodec. `videosink_put_time()` maintains the
+TS/WC reference and forces reanchor on seek epoch, resume edge, speed change,
+missing scheduler anchor, or hard discontinuity. During initialization and
+reanchor, fresh `venc_put_time` is authoritative; otherwise the sink recomputes
+the centralized `stream_get_heard_audio_ts()` value.
+
+## Heard-Audio Anchor Definition
+
+- `heard_audio_ts` is computed centrally via `stream_get_heard_audio_ts()` and is the **single source of truth** for all synchronization and anchoring.
+- **Mode 2 passthrough**: For passthrough mode 2 and mode-2 AC3 recoding, `audio_time` is advanced from submitted compressed packet duration (`fakeSize` or codec-specific logical duration). AVOS collects paired accepted bytes and logical samples for at least 250ms, replaces the platform's nominal compressed-buffer component with the observed byte/sample duration, and freezes the normalized latency without an empirical cap. The former codec-aware app/pipeline policy remains only as startup fallback.
+- **Mode 2 continuous heard time**: for direct mode 2, `audio_time - selected_delay` is the submitted full-buffer frontier. `mode2_heard_interp_ts` advances from monotonic wall time between batches, snaps forward to new frontiers, and cannot lead the frontier by more than encoded capacity (plus the starvation floor). AC3 recode uses its separate wall-clock burst pacer instead.
+- **Mode 2 presentation clock**: complete compressed units are committed to an epoch-owned logical-sample ledger. A low-rate AudioTrack worker publishes generation-scoped timestamp/playhead snapshots without issuing JNI from the writer or scheduler. Fresh, advancing, rate-validated, stable direct `AudioTimestamp` evidence may enter the dynamic heard clock for the enabled direct profile set and for AC3 recoding resolved to mode 2. Recode occupancy already includes pacer write-ahead, so pacer lead is not subtracted again from the dynamic target. Adoption cannot move heard time backward; the renderer remains on its provisional anchor until the measured frontier catches that phase, then performs one explicit audio-based reanchor. Loss of evidence returns gradually to the maintained static clock. Mode-1 recoding and other counter interpretations remain diagnostic-only.
+- **Mode 2 epoch ownership**: first start seeds at the raw frontier; an explicitly empty replacement track seeds at `audio_time - fixed_latency`; delay changes preserve monotonic phase after the playback epoch is established. Pause preserves phase without crediting paused wall time. Seek and track changes use `mode2_heard_frontier_seed_pending` to carry empty-track ownership across resets.
+- **Mode 2 diagnostics**: logs expose packet-duration source and write-timeline geometry (`fakeSize`, `chunk_us`, `dur_bpf`, `dur_rate`). The one-shot `mode2_normalized_latency` record exposes the paired evidence and resulting selected latency without changing the scheduler after the estimate is frozen.
+
+## Sync-Mode Selection Principle
+
+Do not treat `STREAM_SYNC_SAMPLES` as a global replacement for PTS-based
+sync. Select the sync mode by audio path and codec evidence:
+
+- **PCM decode**: keep PTS anchoring at stream start/seek/discontinuity, then
+  advance `audio_time` from committed decoded duration. PCM is already in
+  decoded sample units, so forcing global sample sync would lose useful packet
+  PTS discontinuity and seek information.
+- **FLAC / codecs with unreliable packet PTS but reliable decoded duration**:
+  `STREAM_SYNC_SAMPLES` is appropriate because the decoded sample count is the
+  most stable clock.
+- **Mode 2 compressed passthrough**: `STREAM_SYNC_SAMPLES` is appropriate
+  because demuxed packet PTS can be a poor scheduler clock while the submitted
+  logical duration (`fakeSize`) is the value that represents the audio clock.
+  This applies to AC3, EAC3/DDP, EAC3-JOC/Atmos, DTS/DTS-HD, and TrueHD only
+  after validating that `fakeSize` reflects the codec's real logical duration.
+- **Mode 1 IEC passthrough**: do not inherit mode-2 policy automatically. Treat
+  it as a separate path because its packetization, buffering, and AudioTrack
+  reporting differ from codec-specific mode 2.
+- **AC3 recoding**: depends on the resolved sink. In mode 1 it keeps the mode-1
+  policy. When it resolves to mode 2 (e.g. an eARC route), it adopts the mode-2
+  samples clock under `ac3_mode2_plain_policy` (default on) — it must not stay on
+  the mode-1 CDATA synthetic anchor, which hides a fixed audio-leads-picture
+  offset that only surfaces on real mode-2 hardware. After startup it uses the
+  same paired byte/sample normalized latency as every other mode-2 compressed
+  format; the prior output-layout selection is only a startup fallback. It still keeps its
+  dedicated wall-clock pacer and stays exempt from the ordinary mode-2 lead
+  gate. Trusted direct `AudioTimestamp` occupancy drives its steady-state heard
+  clock when available; the normalized latency plus pacer lead remains fallback.
+
+The design rule is: use sample sync only when submitted/decoded logical
+duration is more trustworthy than per-packet PTS for that path. The scheduler
+still uses the same heard-time model:
+
+```
+heard_ts = audio_time - selected_delay
+```
+
+Measured presentation evidence must feed the centralized heard-time provider,
+not create a second renderer clock. It may dynamically bound the validated
+Mode 2 profile or drive the explicit PCM PlaybackParams speed checkpoint; all
+other paths retain their existing delay selection.
+
+## Mapping Rules
+
+- Only one RST↔TS mapping exists (`timeline_map_apply`). Absolute timestamps are always in TS.
+- Heard‑audio anchoring is compatible with both atempo (software) and hardware speed paths.
+- For plain PCM AudioTrack PlaybackParams speed changes, arm the playhead
+  checkpoint before applying PlaybackParams. The same `anchor_ts` passed to the
+  video sink becomes `at_speed_epoch_heard_ts`, and subsequent heard time comes
+  from AudioTrack presented-frame deltas converted through `RST_TO_TS_DELTA`.
+  This keeps video anchored to the audio actually presented by hardware instead
+  of to write bursts or stale delay-cache state.
+- The speed epoch is re-armed on every hardware speed change, including return
+  to 1.0x, and is cleared on seek, flush, or stop.
+- For atempo software speed changes, the authoritative media anchor comes from
+  the atempo output ledger. The ledger maps transformed output samples back to
+  their media/RST position and lets video/timeline speed commits wait until the
+  matching output boundary reaches the AudioTrack playhead.
+
+## Android Path (sfdec2)
+
+- **Current timed-release path**: `codec_sfdec2.c` maintains the TS/WC render
+  offset, holds frames outside the 200ms submission lookahead, drops frames more
+  than 200ms late, and delegates final presentation to MediaCodec through
+  `render_ts_ns`.
+  - **passthrough=2 post-seek re-init rule**: synchronization anchors (`sink_ref_time`) are strictly reset on every seek so the next committed compressed write establishes a fresh latency-compensated epoch.
+  - **passthrough=2 timing source**: audio TS progression uses compressed-frame `fakeSize` as logical PCM-duration. DTS/DTS-HD follows parser duration first because raw mode 2 writes can be 512-sample DTS frames; otherwise the clock can run 3x too fast. Other formats use codec metadata when available, then logical base units (1536 for EAC3/AC3, 1280 for TrueHD).
+  - **passthrough=2 delay source**: after 250ms of paired accepted-byte/logical-sample evidence, all compressed mode-2 formats use normalized buffer capacity plus residual platform latency as their static clock. Codec-specific app/pipeline selection is retained only during startup or when paired evidence is unavailable. The validated raw AC3/44.1 kHz profile may dynamically follow trusted asynchronous `AudioTimestamp` presentation evidence; no other profile does.
+  - **passthrough=2 renderer source**: `_get_render_heard_ts()` uses a fresh audio-thread `put_time` sample when it is at most 100ms old; otherwise it recomputes the centralized interpolated heard clock. Mode 2 renderer initialization has forward-lead and backward-seek guards but does not maintain a competing audio clock.
+- **Manual A/V delay policy**: keep anchors physical; apply user delay at final presentation scheduling.
+
+## PCM Mode 0 — Startup and Seek Sync
+
+### Startup audio hold
+
+Before the first audio write is committed, PCM audio is held until video
+reaches `audio_start_pts - anchor_delay`. Hold threshold:
+- **PCM (all except TrueHD)**: `-32ms` — audio released as soon as heard
+  time is within 32ms of video. Tighter than the old `-150ms` to allow
+  earlier delivery; `pcm_reanchor` corrects remaining drift.
+- **TrueHD**: `-300ms` — relaxed to accommodate the extremely high packet
+  cadence (~1200 bursts/sec) that would cause a freeze on a tight threshold.
+
+`startup_audio_hold` runs as long as needed (not only for `video_time < 1000`),
+so seeks late in a file are also covered. After seek, the first admitted
+current-epoch video frame is an initial floor; the hold then follows live
+`video_time` until it reaches the first audible timestamp. This allows playback
+to cross a container-level gap before the selected audio track begins.
+
+### PCM startup latency convergence
+
+The first committed decoded-PCM output records the provisional anchor delay and
+arms an epoch-scoped correction. The provisional delay may use AudioTrack's
+HAL-aware pipeline latency, bounded to 500ms above application-buffer latency
+and 1000ms total. This avoids starting long-latency routes, such as Bluetooth,
+from an anchor that accounts only for the local AudioTrack buffer.
+
+Playback-head fallback is withheld for the first 1500ms while direct timestamp
+evidence warms up. Once the direct-timestamp success streak reaches 10, AVOS
+may compare dynamic-derived evidence with the provisional seed. A residual from
+16ms through 500ms requests one renderer correction; smaller differences need
+no movement and larger differences are treated as implausible. A promoted
+playback-head value cannot request correction below that timestamp threshold;
+the normal throttled cache remains usable after the threshold is reached.
+
+The renderer converges at 1ms per distinct video frame and stops within an 8ms
+deadband. Correction state is scoped to the current seek and audio-speed epochs
+and is reset across playback lifecycle boundaries. A speed change during warmup
+rearms the comparison for the new speed epoch. This path is decoded-PCM-only;
+passthrough and AC3 recoding do not participate.
+
+### Legacy PCM resume reanchor state machine
+
+On the first write after resume, `stream_sync_pcm_reanchor_arm()` arms a
+state machine only for non-`put_time` PCM sinks. It selects delay in priority
+order:
+
+1. `last_good_delay_ms + live_atempo_delay`, clamped up to static latency
+2. Static latency as a cold fallback
+
+The reanchor sets `audio_time = sync_v_time + delay` (using the video
+thread's last reported position, not the potentially stale `video_time`).
+It expires if `seek_epoch` changes mid-resume to prevent stale rebases.
+Android `put_time` sinks do not use this state machine: the first committed
+post-resume audio output republishes the centralized heard-time anchor.
+For decoded PCM, sfdec2 owns a separate pending-resume notification, armed by
+the explicit pause hook. The audio writer clears `audio_resume_pending` before
+writing, so that flag's edge cannot reliably notify `put_time()`. The renderer
+waits until playback is unpaused and the first resumed write has committed,
+then pairs the published heard timestamp with its current monotonic reference
+to replace the video render offset. This prevents small differences between
+AudioTrack's actual pause boundary and the wall-duration shift from accumulating
+over repeated pauses. It does not flush audio or change media/sample accounting.
+Any already inserted negative-delay silence remains an intentional video lead;
+its duration is retained in the new offset (scaled for PlaybackParams when
+applicable). Positive delay continues to be applied to video deadlines.
+Seek, decoder flush and speed-epoch changes supersede the pending correction.
+Passthrough retains its separate pause-phase policy; files without audio do not
+arm the PCM correction.
+
+### Post-seek restart
+
+Seek starts a new audio, video, and renderer epoch. Video preroll admits the
+first current-epoch frame at or beyond the target and records it in
+`seek_video_ready_ts`; audio startup uses that value as a floor while following
+live video progress. The first valid post-seek heard timestamp publishes the
+new sink anchor. There is no separate timed seek-convergence state machine.
+
+### PCM audio lead gate
+
+`stream_sync_pcm_audio_lead_gate()` holds an audio write whenever `heard_ts`
+leads `sync_v_time` by more than 200ms. The gate is stateless: it has no streak,
+hysteresis, or forced-expiry counter. Positive user A/V delay is included in
+the permitted lead; negative delay is realized separately as an audio hold.
+
+Applies only to PCM (not passthrough), and not during passthrough bursts.
+
+### PCM delay memory
+
+`_stream_pcm_delay_memory_reset()` is called on seek with
+`reset_smoothed=0`: `last_good_delay` is wiped (stale after seek),
+LWMA history cleared, but `smoothed_av_delay` is kept as a warm starting
+point. On full init `reset_smoothed=1` wipes everything.
+
+### Late-audio-start guard
+
+When delay source is static and audio starts significantly ahead of early
+video (`video_time < 1000`), `anchor_valid` is suppressed in
+`stream_sync_video()` only — not inside `stream_get_heard_audio_ts()`.
+This prevents a premature scheduler anchor without affecting `heard_ts`
+used elsewhere (e.g. `pcm_audio_lead_gate`).
+
+## Pause/Resume and Seek
+
+- **Pause**: a non-flushing pause preserves the AudioTrack PlaybackParams checkpoint, atempo output ledger and pending commits, and direct Mode 2 heard phase/compressed ledger. Wall references are shifted so paused duration is credited neither as audio progress nor renderer drift. Trusted Mode 2 presentation evidence has a bounded remapping grace period after resume. Decoded PCM already produced when pause wins the pre-write race remains pending in the audio thread and is committed after the track is started again; seek/stop still discard it through their normal flush and epoch reset.
+- **Backend pause capability**: `pause_preserves_output` defaults to false; Java AudioTrack explicitly opts in because it freezes queued output. OpenSL ES clears its queue through stop, and legacy native AudioTrack maps pause to stop. These backends use the destructive synchronization restart and the PCM preload policy instead of preserving old queue timing. Compressed output is excluded from PCM silence preload.
+- **Retained output**: capacity and lead waits yield to pause/resume. Java AudioTrack resumes without flush/preload at every speed, including plain 1.0x PCM. A positive short write keeps its accepted prefix in AudioTrack and only its unwritten suffix is retried; a zero-byte write interrupted by pause consumes no media. The pre-filter PCM accumulator also survives. An untouched compressed unit that loses the pause race releases the transaction mutex and retains the entire remaining output until resume. Seek/stop can abort these waits through the normal thread-state reset.
+- **Resume video hold**: the paused decode branch, retained-output waits, interrupted-write retries, and explicit resume path share `stream_audio_prepare_resume()`. It arms both hold flags for non-seek playback so compressed video waits for the first resumed write, subject to the existing bounded timeout. Seek preview does not arm this hold. PCM retains its existing policy of skipping the compressed first-write wait.
+- **Manual negative audio delay**: a non-flushing pause/resume preserves both the delay already inserted and the hold notification still pending for the renderer. A partially applied delay resumes with only the remaining amount. Seek/reset and an actual PCM preload flush clear both fields so the new audio phase receives the requested delay once.
+- **Speed timing on resume**: atempo stays non-flushing at neutral 1.0x, and a PlaybackParams checkpoint survives returning to 1.0x. Preserved atempo commits retain their frame boundaries, order, and elapsed running time toward the three-second fallback. Only paused time is excluded; commits created or reset during pause start their timeout at resume. Commits cannot be promoted while paused. An in-flight renderer correction target shifts with its render offset.
+- **Seek**: synchronization state is reset (`sink_ref_time = -1`). When playback was already established, the flushed compressed track is explicitly marked empty and the next Mode 2 epoch seeds at the submitted frontier minus fixed route latency.
+  - Audio preroll cannot establish the new epoch until video preroll reaches `seek_video_target_ts`. The audio thread waits on epoch-tagged `seek_video_target_pending`; the video thread clears it only when a frame from the current epoch reaches the target. This handshake is independent from audio occupancy or latency estimation.
+  - **PCM**: `startup_audio_hold` gates writes. Android `put_time` sinks publish the centralized heard clock on committed output; legacy sinks may apply the last-good/static `pcm_reanchor`. If the initial decoded-PCM anchor used a provisional pipeline seed, the epoch-scoped direct-timestamp correction may subsequently converge it without synthesizing another seek or pause/resume.
+  - **EAC3/AC3 passthrough**: `startup_anchor_commit` sets `audio_time = video_time + latency`; pre-commit negative anchors are suppressed (see below).
+  - **TrueHD passthrough**: Uses a relaxed 300ms hold threshold to accommodate extremely high packet cadence (1200/sec) and prevent video freezes while filling the HAL pipeline.
+
+## Passthrough Startup Anchor
+
+### `startup_anchor_commit` (mode 1)
+
+On the first mode-1 audio write at startup or after seek, passthrough sets
+`audio_time = video_time + anchor_delay` and calls
+`sfdec2_refresh_sched_anchor()`. This preserves the legacy mode-1 startup
+alignment after the timed-release scheduler refactoring. PCM is excluded: it
+uses `startup_audio_hold` to achieve
+the same alignment by holding writes rather than adjusting `audio_time`.
+Plain mode 2 and AC3-recode mode 2 (under `ac3_mode2_plain_policy`) are also
+excluded: they run the `STREAM_SYNC_SAMPLES` clock, so no `startup_anchor_commit`
+fires (its presence/absence in the log identifies the active policy).
+
+`sfdec2_refresh_sched_anchor()` is required alongside the `audio_time`
+change: on seek a `no_sched=1` reanchor fires before the commit,
+anchoring the scheduler at the wrong `heard_ts`. Zeroing the anchors
+ensures the post-commit `put_time` gets `no_sched_anchor=1` and
+reanchors at the correct value regardless of grace period.
+
+An intentional delayed Mode 1 audio start is the exception. When the first
+audio PTS is materially later than the first admitted video PTS plus the sink
+delay, AVOS holds the complete first IEC burst before its atomic transaction
+until video reaches `audio_start_pts - anchor_delay`. The commit then preserves
+the demuxer audio PTS instead of applying the synthetic anchor. Later packet
+PTS values cannot publish an audio clock while this startup state owns the
+epoch. Ordinary near-zero starts and coarse seek landings retain the legacy
+synthetic anchor.
+
+For Mode 1 `put_time` playback, the centralized heard clock retains the full
+selected delay even while the sink reference is unset. The legacy 50ms startup
+clamp is restricted to sinks without `put_time`; enabling it on resume would
+manufacture a forward jump followed by a backward jump at anchor publication.
+The MediaCodec renderer uses the published Mode 1 clock after seek, without
+clamping it back to the preview frame during initialization or later reanchoring.
+On a new Mode 1 clock anchor, `put_time` installs the renderer offset from that
+publication's heard timestamp and wall timestamp together, under the renderer
+lock. It does not wait for the renderer thread to sample a later refill burst.
+This prevents thread scheduling from selecting a different startup phase or
+creating a large compensating slew after seek. A heard timestamp of zero is
+valid; only the missing wall reference marks an unset Mode 1 scheduler anchor.
+Paused seek previews retain their existing behavior until audio resumes.
+
+An ordinary pause on a backend that preserves queued output retains the valid,
+pause-shifted Mode 1 renderer anchor. The resume-pending edge alone does not
+replace it. Queue preservation does not guarantee that audio presentation freezes
+at exactly the renderer's pause timestamp. Mode 1 therefore records its renderer
+phase relative to the full-queue static heard clock before the first pause. After
+resume, a measurement window must span at least one configured buffer duration
+(and at least 250ms) in both running wall time and accepted audio. Duplicate clock
+publications cannot complete the window. Its minimum wall-minus-heard offset
+selects the fullest queue observation, avoiding the first-burst refill transient.
+
+The measured phase change sets a one-shot video correction, bounded to 4ms and
+10% of the playback interval per distinct frame. Ordinary pauses retain both the
+original phase and an unfinished measurement window. Resume shifts the window's
+wall reference and minimum offset by the paused duration, so only playing time
+counts toward its completion. A window spanning pauses starts recovery and is
+then confirmed by a fresh window; an earlier minimum must not permanently hide
+a phase change in the other direction.
+
+Pause freezes an active correction instead of discarding it. At the next resume,
+before releasing the producers, the renderer applies its measured residual up
+to two video frames (capped at 100ms). Any remainder uses the normal per-frame
+slew. This prevents repeated short play intervals from indefinitely postponing
+measurement and repeatedly cancelling recovery. The resume step requires the
+same valid Mode 1 output and manual delay; seek/startup or invalid anchors bypass
+it. Ordinary playback does not continuously chase the static clock.
+Hard reanchors, non-seek flushes, audio reconfiguration and manual
+A/V delay changes invalidate the reference. This uses neither Mode 2's dynamic
+clock nor the diagnostic IEC occupancy observer and does not estimate downstream
+receiver latency.
+
+A seek on the same Mode 1 audio output preserves only this relative phase,
+guarded by the audio lifecycle generation and manual delay. It still discards
+the old absolute timestamps, scheduler anchors, queue observations and active
+correction. Once the new audio clock is established and the refill measurement
+window completes, a one-shot correction restores any remaining difference from
+the preserved phase. The first publication already anchors the new renderer,
+so this correction handles refill variation rather than renderer startup delay.
+Chained seeks and seeks while paused retain the reference without waiting for
+audio during preview. A seek
+before the initial reference exists simply establishes a new reference normally.
+Late-frame catch-up and genuine audio-gap handling retain their existing policy.
+
+Seek, missing anchors, discarded output, speed changes and genuine
+clock discontinuities still use the existing reanchor paths. Mode 2 and PCM
+policies are unchanged, as are IEC framing, latency selection and audio-gap holds.
+
+### Pre-commit negative anchor guard
+
+Before a valid playback epoch exists, `heard_ts` can be deeply negative because
+the selected delay exceeds the first audio PTS. Publishing that value with
+`no_sched_anchor=1` would lock the scheduler to a phantom reference that later
+burst-smoothing rules might not replace.
+
+**Current rule**: `stream_sync_audio()` publishes `put_time` only when the
+centralized anchor is non-negative. `sink_ref_time` remains `-1`, so mode 1 can
+publish after `startup_anchor_commit` and direct mode 2 can publish when its
+interpolated heard epoch reaches an audible value.
+
+PCM has its own pre-audible startup handling before this publication point;
+the non-negative `put_time` rule remains shared.
+
+## Delay Jitter and Stability
+
+- `smoothed_av_delay` is preferred when valid to damp jitter in the audio chain.
+- Mode 2 uses submitted packet duration, normalized latency, and a bounded steady-state wall-clock interpolator as its universal fallback. The interpolator smooths write batches but does not claim to measure AudioTrack occupancy.
+- The asynchronous Mode 2 observer polls away from the writer, publishes generation-tagged snapshots, and maps presentation through the complete-unit ledger. Trusted direct timestamps influence enabled direct Mode 2 profiles and AC3 recoding resolved to Mode 2. Mode 1 and byte/frame alternatives remain diagnostic-only.
+- Internal sync stability does not prove physical lipsync when downstream devices add unreported decode/DSP latency after HDMI/ARC. That class of offset must be handled as route/user delay outside the core scheduler.

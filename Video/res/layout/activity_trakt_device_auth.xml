@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="vertical"
+    android:background="@android:color/black"
+    tools:ignore="Overdraw">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_horizontal|center_vertical"
+        android:layout_gravity="center"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp">
+
+        <ImageView
+            android:id="@+id/trakt_activate_qr"
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            android:layout_marginEnd="16dp"
+            android:contentDescription="@string/trakt_device_auth_step1"
+            android:src="@drawable/trakt_activate_qr"
+            android:adjustViewBounds="true"
+            android:scaleType="fitCenter" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_weight="1"
+            android:gravity="center_horizontal|center_vertical">
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/connect_trakt"
+                android:textSize="28sp"
+                android:textColor="@android:color/white"
+                android:layout_marginBottom="12dp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/instructions_step1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/trakt_device_auth_step1"
+                android:textSize="18sp"
+                android:textColor="@android:color/white"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/verification_url"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="24sp"
+                android:textColor="#00b4dc"
+                android:layout_marginBottom="16dp"
+                android:textStyle="bold"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:nextFocusDown="@+id/user_code"
+                android:nextFocusUp="@+id/cancel_button" />
+
+            <TextView
+                android:id="@+id/instructions_step2"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/trakt_device_auth_step2"
+                android:textSize="18sp"
+                android:textColor="@android:color/white"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/user_code"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="32sp"
+                android:textColor="#ed1c24"
+                android:layout_marginBottom="16dp"
+                android:textStyle="bold"
+                android:letterSpacing="0.2"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:nextFocusDown="@+id/cancel_button"
+                android:nextFocusUp="@+id/verification_url" />
+
+            <ProgressBar
+                android:id="@+id/progress_bar"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:indeterminate="true" />
+
+            <TextView
+                android:id="@+id/status_message"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/trakt_device_auth_waiting"
+                android:textSize="16sp"
+                android:textColor="@android:color/white"
+                android:gravity="center"
+                android:layout_marginBottom="12dp" />
+
+            <Button
+                android:id="@+id/cancel_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@android:string/cancel"
+                android:textSize="20sp"
+                android:paddingStart="48dp"
+                android:paddingEnd="48dp"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp"
+                android:layout_marginBottom="8dp"
+                android:layout_gravity="center_horizontal"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:nextFocusUp="@+id/user_code"
+                android:nextFocusDown="@+id/verification_url" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

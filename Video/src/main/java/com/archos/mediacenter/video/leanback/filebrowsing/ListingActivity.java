@@ -1,0 +1,253 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.leanback.filebrowsing;
+
+import static com.archos.filecorelibrary.smbj.SmbjUtils.isSMBjEnabled;
+import static com.archos.filecorelibrary.sshj.SshjUtils.isSSHjEnabled;
+
+import androidx.activity.BackEventCompat;
+import androidx.activity.OnBackPressedCallback;
+import androidx.annotation.NonNull;
+import androidx.core.content.IntentCompat;
+import androidx.fragment.app.Fragment;
+import android.annotation.SuppressLint;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Parcelable;
+import android.os.SystemClock;
+import android.view.KeyEvent;
+import android.view.ViewConfiguration;
+
+import com.archos.mediacenter.video.leanback.SingleFragmentActivity;
+import com.archos.mediacenter.video.leanback.network.ftp.FtpListingActivity;
+import com.archos.mediacenter.video.leanback.network.smb.SmbListingActivity;
+import com.archos.mediacenter.video.leanback.network.smbj.SmbjListingActivity;
+import com.archos.mediacenter.video.leanback.network.sshj.SshjListingActivity;
+import com.archos.mediacenter.video.leanback.network.upnp.UpnpListingActivity;
+import com.archos.mediacenter.video.leanback.network.webdav.WebdavListingActivity;
+
+public abstract  class ListingActivity extends SingleFragmentActivity {
+
+    /**
+     * android.net.Uri to start with
+     */
+    public static final String EXTRA_STARTING_URI = "STARTING_URI";
+
+    /**
+     * Name to be displayed for the starting level
+     */
+    public static final String EXTRA_STARTING_NAME = "STARTING_NAME";
+
+    /**
+     * android.net.Uri used as root.
+     * goBackOneLevel() will return false if this root Uri is the current one
+     * rootUri MUST be a parent of startingUri (or equal to startingUri)
+     */
+    public static final String EXTRA_ROOT_URI = "ROOT_URI";
+
+    /**
+     * Name to be displayed for the root level
+     */
+    public static final String EXTRA_ROOT_NAME = "ROOT_NAME";
+
+    /**
+     * True if credentials were just entered right before launching the listing
+     */
+    public static final String EXTRA_CREDENTIALS_JUST_PROVIDED = "CREDENTIALS_JUST_PROVIDED";
+
+    /**
+     * Get the fragment to start with
+     */
+    abstract protected ListingFragment getStartingFragment();
+
+    /**
+     * if a file or folder has been deleted
+     */
+    public static final int RESULT_FILE_DELETED = 1;
+
+    /**
+     * when starting info activity in listing fragments
+     */
+    public static final int REQUEST_INFO_ACTIVITY = 1;
+
+    /**
+     * Return the best Activity class ofr a given Uri
+     * @param uri
+     * @return
+     */
+    public static Class getActivityForUri(Uri uri) {
+        final String scheme = uri.getScheme();
+
+        if ("file".equals(scheme)) {
+            return LocalListingActivity.class;
+        }
+        else if ("smb".equals(scheme)) {
+            if (isSMBjEnabled()) return SmbjListingActivity.class;
+            else return SmbListingActivity.class;
+        }
+        else if ("upnp".equals(scheme)) {
+            return UpnpListingActivity.class;
+        }
+        else if ("webdav".equals(scheme)) {
+            return WebdavListingActivity.class;
+        }
+        else if ("webdavs".equals(scheme)) {
+            return WebdavListingActivity.class;
+        }
+        else if ("smbj".equals(scheme)) {
+            return SmbjListingActivity.class;
+        }
+        else if ("sftp".equals(scheme)) {
+            if (isSSHjEnabled()) return SshjListingActivity.class;
+            else return FtpListingActivity.class;
+        }
+        else if ("sshj".equals(scheme)) {
+            return SshjListingActivity.class;
+        }
+        else if (scheme!=null && scheme.contains("ftp")) { // ftp, sftp, ftps
+            return FtpListingActivity.class;
+        }
+        else {
+            throw new IllegalArgumentException("Found no Activity for "+uri);
+        }
+    }
+
+    /**
+     * Give Uri to start browsing from.
+     * Also goBackOneLevel() will return false if this root Uri is the current one
+     */
+    protected Uri getStartingUri() {
+        Uri uri = IntentCompat.getParcelableExtra(getIntent(), EXTRA_STARTING_URI, Uri.class);
+        if (uri==null) {
+            // Default to the root
+            return getRootUri();
+        }
+        return uri;
+    }
+
+    protected String getStartingName() {
+        String name = getIntent().getStringExtra(EXTRA_STARTING_NAME);
+        if (name==null) {
+            // Default to the root
+            return getRootName();
+        }
+        return name;
+    }
+
+    /**
+     * goBackOneLevel() will return false if this root Uri is the current one
+     */
+    protected Uri getRootUri() {
+        Uri uri = IntentCompat.getParcelableExtra(getIntent(), EXTRA_ROOT_URI, Uri.class);
+        if (uri==null) {
+            throw new IllegalStateException("EXTRA_ROOT_URI Uri is mandatory in the fragment arguments!");
+        }
+        return uri;
+    }
+
+    /**
+     * Name to be displayed for the root level
+     */
+    protected String getRootName() {
+        String name = getIntent().getStringExtra(EXTRA_ROOT_NAME);
+        if (name != null &&  name.equalsIgnoreCase("null")) name = "/";
+        if (name==null) {
+            throw new IllegalStateException("EXTRA_ROOT_NAME String is mandatory in the fragment arguments!");
+        }
+        return name;
+    }
+
+    /**
+     * Imlements SingleFragmentActivity
+     * @return
+     */
+    public Fragment getFragmentInstance() {
+        ListingFragment frag = getStartingFragment();
+        Bundle args = new Bundle();
+        args.putParcelable(ListingFragment.ARG_URI, (Parcelable)getStartingUri());
+        args.putString(ListingFragment.ARG_TITLE, getStartingName());
+        args.putBoolean(ListingFragment.ARG_IS_ROOT, true); // this is the first fragment in the activity
+        if (getIntent().hasExtra(EXTRA_CREDENTIALS_JUST_PROVIDED)) {
+            args.putBoolean(ListingFragment.ARG_CREDENTIALS_JUST_PROVIDED,
+                    getIntent().getBooleanExtra(EXTRA_CREDENTIALS_JUST_PROVIDED, false));
+        }
+        frag.setArguments(args);
+        return frag;
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            private long mBackStartedAt;
+
+            @Override
+            public void handleOnBackStarted(@NonNull BackEventCompat backEvent) {
+                mBackStartedAt = SystemClock.elapsedRealtime();
+            }
+
+            @Override
+            public void handleOnBackPressed() {
+                long pressDuration = mBackStartedAt == 0
+                        ? 0 : SystemClock.elapsedRealtime() - mBackStartedAt;
+                mBackStartedAt = 0;
+                if (pressDuration >= ViewConfiguration.getLongPressTimeout()) {
+                    MultiBackHintManager.getInstance(ListingActivity.this).onBackLongPressed();
+                    finish();
+                    return;
+                }
+
+                MultiBackHintManager.getInstance(ListingActivity.this).onBackPressed();
+
+                boolean popped = getSupportFragmentManager().popBackStackImmediate();
+                if (!popped) {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+
+            @Override
+            public void handleOnBackCancelled() {
+                mBackStartedAt = 0;
+            }
+        });
+    }
+
+    public void notifyFileDeleted(Uri file) {
+        for (int i = 0; i <= getSupportFragmentManager().getBackStackEntryCount(); i++) {
+            Fragment frag = getSupportFragmentManager().findFragmentByTag("fragment_" + i);
+            if (frag instanceof ListingFragment) {
+                ((ListingFragment) frag).onFileDelete(file);
+            }
+        }
+    }
+
+    // onKeyLongPress handles a BACK long-press (quit shortcut), which has no equivalent in
+    // OnBackPressedCallback/predictive-back (that API only covers single back gestures/presses).
+    @SuppressLint("GestureBackNavigation")
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+
+        // Quit file browsing on BACK long press
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            MultiBackHintManager.getInstance(this).onBackLongPressed();
+            finish();
+            return true;
+        }
+        else return super.onKeyLongPress(keyCode, event);
+    }
+}

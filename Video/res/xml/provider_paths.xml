@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <external-path name="external_files" path="." />
+  <root-path name="storage_files" path="/storage/" />
+  <root-path name="mount_files" path="/mnt/" />
+  <external-cache-path name="subtitles" path="subtitles/" />
+</paths>

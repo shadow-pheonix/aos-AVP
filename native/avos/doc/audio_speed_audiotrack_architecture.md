@@ -1,0 +1,247 @@
+# Audio Speed Change Architecture
+
+## Overview
+
+This document details the architecture for audio speed changes in the AVOS player. The implementation relies on a time-scaled (`ts`) internal clock, anchored conversions between the real-stream and time-scaled domains, and a sink-side synchronization mechanism. In the AudioTrack PlaybackParams path, speed changes are applied seamlessly by retargeting the timeline mapping without a self-seek.
+
+### MediaCodec Audio Exclusion
+
+This architecture does not apply when MediaCodec is the active audio decoder.
+AudioTrack PlaybackParams can consume PCM faster, but it cannot make an
+upstream vendor MediaCodec implementation decode faster. When that decoder
+remains near 1.0x, faster playback drains AudioTrack, stalls the heard clock,
+and can leave video waiting. AVOS therefore rejects every non-1.0 speed request
+while MediaCodec audio decoding is active. This restriction concerns
+MediaCodec audio decoding, not MediaCodec video presentation scheduling. See
+`doc/mediacodec_audio_decoder.md`.
+
+## Time Domains
+
+There are three fundamental time domains in the implementation:
+
+-   **`wc` (Wall Clock):** The system's monotonic clock (`clock_gettime()`). It progresses linearly and is independent of playback speed. It is the ground truth for real-world time.
+
+-   **`rst` (Real Stream Time):** The original media stream's own timeline, representing the actual position within the media file (e.g., 0 to 10 minutes). It is primarily used for UI display and for seeking.
+
+-   **`ts` (Time-Scaled):** This is the **primary internal time domain** for the core player logic. The parser creates a "compressed" or "expanded" timeline where all timestamps are scaled by the `audio_speed`. At 2.0x speed, a frame at 60s (`rst`) will have a timestamp of 30s (`ts`). All core variables like `s->video_time` and `frame->time` are in this domain.
+
+It is important to understand that wall clock progresses at ts rate: `delta_wc = delta_ts` thus adding ts domain increments to wc domain is intended and does not result into a mismatch.
+
+### Key Relationship
+
+`ts = rst / audio_speed` and `rst = ts * audio_speed`. Absolute conversions use the `RST_TO_TS_TIME` / `TS_TO_RST_TIME` helpers, while durations use the `RST_TO_TS_DELTA` / `TS_TO_RST_DELTA` helpers so anchors are only applied when needed.
+
+## Core Architecture
+
+### Parser Interaction (Creating the `ts` Domain)
+
+The FFmpeg parser retains packet timestamps in their original domain and exposes
+mapped TS timestamps through the chunk interface. Video chunks additionally
+carry the original media/RST time. MediaCodec (`sfdec2`) submits and reorders
+these original timestamps, then exposes mapped TS to the engine while retaining
+RST on the frame. Pending display/renderer frames are remapped after speed
+commits, rather than keeping the mapping from before they were decoded.
+
+The MediaCodec renderer adopts the committed mapping, snap cadence and audio
+anchor together in `videosink_put_time()`. A requested speed alone cannot reset
+its scheduling clock. Once an audio-based wall anchor is established, ordinary
+PCM speed commits preserve it: TS-to-wall time remains continuous while the
+media-to-TS slope changes. Lifecycle transitions and hard drift still reanchor.
+See [buffered MediaCodec video across speed changes](audio_speed_atempo_architecture.md#buffered-mediacodec-video-across-speed-changes)
+for the shared atempo, Sonic and PlaybackParams behavior and scope.
+
+### Timeline Mapping (Anchors)
+
+Speed changes no longer flush the pipeline. Instead, the player maintains an anchored mapping between `rst` and `ts`:
+
+- `timeline_map_apply(rst_anchor, ts_anchor, speed)` installs a new piecewise-linear mapping that preserves continuity at the current playback position.
+- `rst_to_ts_time` / `ts_to_rst_time` convert absolute timestamps using the anchors.
+- `rst_to_ts_delta` / `ts_to_rst_delta` rescale pure durations without touching the anchors.
+
+Whenever `stream_set_av_speed` succeeds (or the audio hardware reports a quantised ratio), the current playback position is captured and used as the new anchor so in-flight buffers keep their ordering.
+Both speed backends use seamless timeline updates without a self-seek on speed changes.
+
+### Concurrent format changes
+
+Speed commands hold an audio lifecycle reader lease while accessing AudioTrack.
+Audio-worker sink reconfiguration takes the writer lease through stop, recreation,
+and restart, so a command cannot use a released track. Decoder speed callbacks
+also share `video_control_mutex` with decoder open/close. Neither mechanism adds a
+pause, flush, or seek to ordinary speed changes.
+
+### AudioTrack PlaybackParams Speed-Epoch Clock
+
+Plain PCM AudioTrack PlaybackParams speed changes have one extra clock rule.
+During an in-flight speed ramp, the normal PCM heard clock:
+
+```text
+heard_ts = audio_time - last_good_delay_ms
+```
+
+is not authoritative enough. `audio_time` advances in write quanta, while
+`last_good_delay_ms` is a stability cache that can lag the hardware state
+across speed epochs. Updating `last_good_delay_ms` after a write has already
+advanced `audio_time` can introduce a discontinuity instead of removing one.
+
+For the AudioTrack PlaybackParams path, AVOS therefore arms a speed-epoch
+checkpoint at every speed change, including a return to 1.0x:
+
+1. Compute `anchor_ts`, the same continuity anchor used for the video sink.
+2. Before calling `audio_interface_change_audio_speed()`, read a fresh
+   `getPlaybackHeadPosition()` sample.
+3. Store:
+   - `at_speed_epoch_heard_ts = anchor_ts`
+   - `at_speed_epoch_presented_frames = playback_head`
+   - `at_speed_epoch_rate = AudioTrack sample rate`
+   - `at_speed_epoch_speed = requested speed`, then patch it to the hardware
+     read-back speed after the PlaybackParams call returns.
+4. While the epoch is active, derive heard time from the presented-frame delta:
+
+```text
+frames_delta = current_playback_head - at_speed_epoch_presented_frames
+delta_media_ms = frames_delta * 1000 / at_speed_epoch_rate
+heard_ts = at_speed_epoch_heard_ts + delta_media_ms / at_speed_epoch_speed
+```
+
+This is the same checkpoint idea used by players that derive the audible media
+position from the hardware playhead. It makes speed changes continuous in the
+clock that matters to the video sink, instead of relying on write timing or a
+cached delay value.
+
+The epoch is cleared on seek, flush, or stop. It is not cleared merely because
+the requested speed returns to 1.0x; the return to 1.0x is itself a speed epoch
+and must preserve continuity from the previous hardware-rate segment.
+
+The current implementation reads `getPlaybackHeadPosition()` fresh on every
+epoch heard-clock query. A stale 10ms cache was observed to reintroduce
+perceptible stair-step jitter during speed ramps. A future optimization may
+interpolate between less frequent playhead samples, but that should be a
+separate correctness-neutral change.
+
+The speed checkpoint explicitly requests a direct playhead query
+(`prefer_fresh = 2`) both when it is armed and when its clock is read. A cached
+AudioTimestamp extrapolated using the new speed cannot stand in for the old
+position at the transition. Other fresh presentation queries accept timestamps
+only up to 100ms old, then query the playhead directly.
+
+Successful rate changes invalidate obsolete timestamp extrapolation while
+preserving queued samples and the frame epoch. If `setPlaybackParams()` fails,
+AVOS still attempts hardware readback and keeps that rate; if readback also
+fails, it retains the previous confirmed rate. It does not claim a rollback to
+1.0x that the hardware never performed. The timeline and checkpoint use the
+applied rate.
+
+A non-flushing pause preserves the checkpoint. Seek, stop, or a backend restart
+that discards output clears it. Android playhead/timestamp observations do not
+measure unknown downstream soundbar or receiver latency.
+
+### A/V Synchronization and Video Pacing
+
+Audio is the master clock. The current `sfdec2` video sink maps the centralized
+heard-audio TS onto `CLOCK_MONOTONIC` with `render_offset_ns`. It snaps each
+frame TS at the effective frame rate, adds the render offset and user video
+delay, and submits the resulting `render_ts_ns` to MediaCodec. The video thread
+limits queueing to a 200ms lookahead and drops frames that are already more than
+200ms late. It does not use the former `blit_duration` feedback loop.
+
+### Seeking (`_stream_seek_real`)
+
+Seeking uses the `rst` domain as its input.
+1. The UI provides a seek target in **RST**.
+2. `_stream_seek_real` receives this `rst` value and passes it to the parser.
+3. The parser seeks to the requested `rst` keyframe in the media file.
+4. When `_parse_once` reads the new packets from this position, it immediately scales their timestamps to the **`ts`** domain, and playback resumes correctly.
+
+### Metadata
+
+Container-level metadata like `duration` and `start_time` are read in their original **`rst`** domain. They are converted to `ts` on-the-fly when needed for calculations against the internal `ts` clocks.
+
+## Time Domain Variable Reference
+
+| Variable | Domain | Use and Explanation |
+|---|---|---|
+| `s->video_time` | `ts` | The current video playback time in the time-scaled domain. |
+| `s->audio_time` | `ts` | The current audio playback time in the time-scaled domain. |
+| `frame->time` | `ts` | The timestamp of a video frame in the time-scaled domain. |
+| `cdata->time` | `ts` | Timestamp of a data chunk from the parser in the time-scaled domain. |
+| `s->cdata_now.time`| `ts` | The timestamp of the current data chunk being processed. |
+| `sc.time` | `rst` | Seek result time from the parser; used to reset stream state before TS scaling resumes. |
+| `frame->duration` | `ts` | The scaled duration of a single video frame. |
+| `frame->blit_time`| `ts` | The target presentation time for a video frame, numerically comparable to WC. |
+| `venc_time` | `wc` | The video sink's internal wall-clock timer, used for pacing against `blit_time`. |
+| `s->delay` | `ts` | The smoothed A/V difference, calculated and stored as a `ts` duration. |
+| `s->av_delay` | `rst` | A user-configured A/V offset, in real-world milliseconds. |
+| `s->video->msPerFrame` | `rst` | The unscaled, real-world duration of a single video frame. |
+| `s->audio->bytesPerSec` | N/A | Unscaled property: The data rate of the audio stream in bytes per second. |
+| `s->video->bytesPerSec` | N/A | Unscaled property: The data rate of the video stream in bytes per second. |
+| `s->audio->bytesPerFrame`| N/A | Unscaled property: The size of a single audio frame in bytes. |
+| `s->sink_ref_time`| `wc` | A wall-clock anchor time, used to align the `ts` and `wc` timelines. |
+| `s->vid_ref_time` | `ts` | A time-scaled anchor timestamp, used to align the `ts` and `wc` timelines. |
+| `stream_get_current_time()` | `rst` | **Returns** the current playback position in `rst` for UI purposes (converts from `s->video_time`). |
+| `stream_seek_time()` | `rst` | **Accepts** a seek position in `rst` from the UI. |
+| `s->duration` | `rst` | The total duration of the media, stored in `rst`. |
+| `_get_audio_time` | `ts` | Stream function performs `rst` to `ts` domain conversion. |
+| `_get_video_time` | `ts` | Stream function performs `rst` to `ts` domain conversion. |
+| `at_speed_epoch_heard_ts` | `ts` | Heard-audio checkpoint used during AudioTrack PlaybackParams speed epochs. |
+| `at_speed_epoch_presented_frames` | sample frames | AudioTrack playback-head position at the speed-epoch checkpoint. |
+| `at_speed_epoch_rate` | Hz | AudioTrack sample rate used to convert presented-frame deltas to media milliseconds. |
+
+**Notes:**
+*   Functions that run once at startup, like metadata parsing (`_parse_format`), operate in the `rst` domain before any speed scaling is applied.
+*   `stream_parser_guess_msPerFrame` is a fallback called during initialization when speed is 1.0, so it calculates `msPerFrame` in the `rst` domain.
+*   Dynamic AudioTrack delay must be expressed as wall/output milliseconds. When
+    PlaybackParams speed is active, a pending frame count converted as
+    `frames_pending * 1000 / rate` is media duration, not wall time; the
+    wall-delay form is `frames_pending * 1000 / (rate * speed)`.
+*   During AudioTrack PlaybackParams speed epochs, the playhead checkpoint
+    replaces delay-cache-derived heard time. Outside those epochs, delay
+    evidence remains a delay provider, not a second audio clock.
+
+## Design Philosophy
+
+The seamless approach for applying speed changes prioritizes:
+
+1. **Continuity of buffered data:** Anchors guarantee that timestamps never jump backwards, so decoder and renderer queues stay valid without flushing.
+2. **Simplicity of call sites:** Every conversion goes through the same helpers, eliminating special cases for “speed == 1.0”.
+3. **Hardware compatibility:** The actual ratio reported by the audio hardware (even if quantised) is fed back into the mapping so MediaCodec pacing continues to match.
+
+This architecture delivers seamless speed changes while maintaining clear separation between time domains.
+
+### Time Domain Equivalence: `ts` vs `wc`
+
+A key aspect of the architecture is the numerical equivalence between `ts` (Time-Scaled) and `wc` (Wall-Clock) **durations**. This is proven as follows:
+
+1.  By definition of playback speed, the Wall-Clock time elapsed for a given Real Stream Time duration is: `Δwc = Δrst / audio_speed`.
+2.  By definition of the parser's scaling, the Time-Scaled duration for a given Real Stream Time duration is: `Δts = Δrst / audio_speed`.
+3.  Therefore, it is unequivocally true that **`Δts = Δwc`**.
+
+This equivalence is crucial. It means that a duration of 100ms in `ts` is
+numerically equal to a duration of 100ms in `wc`. The current video sink uses
+that property to map an audio-owned heard TS onto monotonic time:
+
+`render_offset_ns = monotonic_now_ns - heard_ts * 1e6`
+
+Adding that offset to a future frame TS produces its MediaCodec presentation
+deadline. The former `venc_time`/`blit_duration` feedback loop used the same
+duration equivalence but is no longer the active `sfdec2` pacing path.
+
+#### Current Platform-Timed Release Strategy
+
+The current `sfdec2` path always uses the restored platform-timed release engine
+(historically `android_sync=1`); it is not selected by a runtime flag.
+
+1. **TS/WC mapping:** `videosink_put_time()` maintains the audio-owned TS anchor
+   and its monotonic reference. Speed, seek, resume, and hard discontinuity
+   events explicitly reset the scheduler mapping.
+2. **Deadline calculation:** `codec_sfdec2.c` snaps each frame TS at the current
+   effective frame rate, then adds `render_offset_ns` and user video delay to
+   produce `render_ts_ns`.
+3. **Bounded local queueing:** the video thread waits only until a frame enters
+   the 200ms MediaCodec lookahead window. A frame already more than 200ms late is
+   released without rendering.
+4. **Platform presentation:** frames inside the window are passed to
+   `sfdec_buf_render()` with the non-zero deadline; MediaCodec owns final timed
+   presentation.
+
+The TS/WC duration equivalence above remains the mathematical basis for this
+mapping, but the old `blit_duration` wait/drop loop is not the current path.

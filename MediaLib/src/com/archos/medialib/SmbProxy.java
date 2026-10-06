@@ -1,0 +1,121 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.medialib;
+
+import static com.archos.filecorelibrary.FileUtils.encodeUri;
+
+import android.net.Uri;
+
+import com.archos.filecorelibrary.MetaFile2;
+import com.archos.filecorelibrary.MetaFile2Factory;
+import com.archos.filecorelibrary.MimeUtils;
+import com.archos.filecorelibrary.StreamOverHttp;
+import com.archos.mediacenter.filecoreextension.UriUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.Map;
+
+public class SmbProxy extends Proxy{
+
+    private static final Logger log = LoggerFactory.getLogger(SmbProxy.class);
+    private StreamOverHttp mStream;
+    private final StreamOverHttp.ReadMode mReadMode;
+
+    protected SmbProxy(Uri uri) {
+        this(uri, StreamOverHttp.ReadMode.DEFAULT);
+    }
+
+    private SmbProxy(Uri uri, StreamOverHttp.ReadMode readMode) {
+        super(uri);
+        mReadMode = readMode;
+    }
+    public static boolean needToStream(String scheme){
+            return "smb".equalsIgnoreCase(scheme) ||
+                    "ftp".equalsIgnoreCase(scheme) ||
+                    "ftps".equalsIgnoreCase(scheme) ||
+                    "sftp".equalsIgnoreCase(scheme) ||
+                    "sshj".equalsIgnoreCase(scheme) ||
+                    "webdav".equalsIgnoreCase(scheme) ||
+                    "webdavs".equalsIgnoreCase(scheme) ||
+                    "smbj".equalsIgnoreCase(scheme) ||
+                    UriUtils.isContentUri(Uri.parse(scheme+"://test"));
+    }
+    protected Uri start() {
+        stop();
+        Uri encodedUri = encodeUri(mUri);
+        String mimeType = MimeUtils.guessMimeTypeFromExtension(encodedUri.getLastPathSegment());
+        MetaFile2 file = null;
+        try {
+            try {
+                file = MetaFile2Factory.getMetaFileForUrl(mUri);
+            } catch (Exception e) {
+                // this is not really an error
+                if (log.isTraceEnabled()) log.trace("start: error getting metafile for url {}", mUri, e);
+            }
+            if(file != null) {
+                mStream = new StreamOverHttp(file, mimeType, mReadMode);
+            } else {
+                // sftp at least requires encodedUri
+                mStream = new StreamOverHttp(encodedUri, mimeType, mReadMode);
+            }
+        } catch (IOException e) {
+            return null;
+        }
+        return mStream.getUri(file != null ? file.getName():encodedUri.getLastPathSegment());
+    }
+    
+    public void stop() {
+        if (mStream != null) {
+            mStream.close();
+            mStream = null;
+        } 
+    }
+    
+    public static SmbProxy setDataSource(Uri uri, IMediaPlayer mp, Map<String, String> headers) throws IOException {
+        SmbProxy proxy = new SmbProxy(uri, StreamOverHttp.ReadMode.PLAYBACK);
+        boolean installed = false;
+        try {
+            Uri local = proxy.start();
+            if (local == null) throw new IOException("Unable to open proxy");
+            if (headers != null) mp.setDataSource2(local.toString(), headers);
+            else mp.setDataSource(local.toString());
+            installed = true;
+            return proxy;
+        } finally {
+            if (!installed) proxy.stop();
+        }
+    }
+
+    public static SmbProxy setDataSource(Uri uri, IMediaMetadataRetriever mr, Map<String, String> headers) throws IllegalArgumentException {
+        SmbProxy proxy = new SmbProxy(uri);
+        boolean installed = false;
+        try {
+            Uri local = proxy.start();
+            if (local == null) throw new IllegalArgumentException("Unable to open proxy");
+            mr.setDataSource(local.toString(), headers);
+            installed = true;
+            return proxy;
+        } finally {
+            if (!installed) proxy.stop();
+        }
+    }
+
+    public int doesCurrentFileExists() {
+        return mStream.doesCurrentFileExists();
+    }
+}

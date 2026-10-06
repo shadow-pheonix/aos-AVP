@@ -1,84 +1,72 @@
-[submodule "Video"]
-	path = Video
-	url = ../aos-Video.git
-	branch = v6.4
-[submodule "MediaLib"]
-	path = MediaLib
-	url = ../aos-MediaLib.git
-	branch = v6.4
 [submodule "FileCoreLibrary"]
-	path = FileCoreLibrary
-	url = ../aos-FileCoreLibrary.git
-	branch = v6.4
-[submodule "native/avos"]
-	path = native/avos
-	url = ../aos-avos.git
-	branch = ffmpeg_n8_0
+  path = FileCoreLibrary
+  url = https://github.com/nova-video-player/aos-FileCoreLibrary.git
+  branch = v6.4
 [submodule "native/audiocompress"]
-	path = native/audiocompress
-	url = ../aos-audiocompress.git
-	branch = master
+  path = native/audiocompress
+  url = https://github.com/nova-video-player/aos-audiocompress.git
+  branch = master
 [submodule "native/ffmpeg-android-builder"]
-	path = native/ffmpeg-android-builder
-	url = ../ffmpeg-android-builder-nobin.git
-	branch = v8_0
+  path = native/ffmpeg-android-builder
+  url = https://github.com/nova-video-player/ffmpeg-android-builder-nobin.git
+  branch = v8_0
 [submodule "native/dav1d-android-builder"]
-	path = native/dav1d-android-builder
-	url = ../dav1d-android-builder-nobin.git
-	branch = v1_4
+  path = native/dav1d-android-builder
+  url = https://github.com/nova-video-player/dav1d-android-builder-nobin.git
+  branch = v1_4
 [submodule "native/opus-android-builder"]
-	path = native/opus-android-builder
-	url = ../opus-android-builder-nobin.git
-	branch = 20241012
+  path = native/opus-android-builder
+  url = https://github.com/nova-video-player/opus-android-builder-nobin.git
+  branch = 20241012
 [submodule "native/libmysofa-android-builder"]
-	path = native/libmysofa-android-builder
-	url = ../libmysofa-android-builder.git
-	branch = main
+  path = native/libmysofa-android-builder
+  url = https://github.com/nova-video-player/libmysofa-android-builder.git
+  branch = main
 [submodule "native/openssl-android-builder"]
-	path = native/openssl-android-builder
-	url = ../openssl-android-builder-nobin.git
-	branch = v3_5_2
+  path = native/openssl-android-builder
+  url = https://github.com/nova-video-player/openssl-android-builder-nobin.git
+  branch = v3_5_2
 [submodule "native/libyuv"]
-	path = native/libyuv
-	url = ../aos-libyuv.git
-	branch = master
+  path = native/libyuv
+  url = https://github.com/nova-video-player/aos-libyuv.git
+  branch = master
 [submodule "native/libnativehelper"]
-	path = native/libnativehelper
-	url = ../aos-libnativehelper.git
-	branch = master
+  path = native/libnativehelper
+  url = https://github.com/nova-video-player/aos-libnativehelper.git
+  branch = master
 [submodule "native/boost"]
-	path = native/boost
-	url = ../aos-boost-android-builder.git
-	branch = master
+  path = native/boost
+  url = https://github.com/nova-video-player/aos-boost-android-builder.git
+  branch = master
 [submodule "native/libtorrent-android-builder"]
-	path = native/libtorrent-android-builder
-	url = ../aos-libtorrent-android-builder.git
-	branch = main
+  path = native/libtorrent-android-builder
+  url = https://github.com/nova-video-player/aos-libtorrent-android-builder.git
+  branch = main
 [submodule "native/torrentd"]
-	path = native/torrentd
-	url = ../torrentd-nobin.git
-	branch = master
+  path = native/torrentd
+  url = https://github.com/nova-video-player/torrentd-nobin.git
+  branch = master
 [submodule "native/prebuilt/ffmpeg"]
-	path = native/prebuilt/ffmpeg
-	url = ../prebuilt-ffmpeg.git
-	branch = v8_0
+  path = native/prebuilt/ffmpeg
+  url = https://github.com/nova-video-player/prebuilt-ffmpeg.git
+  branch = v8_0
 [submodule "native/prebuilt/opus"]
-	path = native/prebuilt/opus
-	url = ../prebuilt-opus.git
-	branch = main
+  path = native/prebuilt/opus
+  url = https://github.com/nova-video-player/prebuilt-opus.git
+  branch = main
 [submodule "native/prebuilt/dav1d"]
-	path = native/prebuilt/dav1d
-	url = ../prebuilt-dav1d.git
-	branch = v1_5
+  path = native/prebuilt/dav1d
+  url = https://github.com/nova-video-player/prebuilt-dav1d.git
+  branch = v1_5
 [submodule "native/prebuilt/openssl"]
-	path = native/prebuilt/openssl
-	url = ../prebuilt-openssl.git
-	branch = v3_5
+  path = native/prebuilt/openssl
+  url = https://github.com/nova-video-player/prebuilt-openssl.git
+  branch = v3_5
 [submodule "native/prebuilt/libmysofa"]
-	path = native/prebuilt/libmysofa
-	url = ../prebuilt-libmysofa.git
-	branch = v1_3
+  path = native/prebuilt/libmysofa
+  url = https://github.com/nova-video-player/prebuilt-libmysofa.git
+  branch = v1_3
 [submodule "native/prebuilt/torrentd"]
-	path = native/prebuilt/torrentd
-	url = ../prebuilt-torrentd.git
-	branch = main
+  path = native/prebuilt/torrentd
+  url = https://github.com/nova-video-player/prebuilt-torrentd.git
+  branch = main

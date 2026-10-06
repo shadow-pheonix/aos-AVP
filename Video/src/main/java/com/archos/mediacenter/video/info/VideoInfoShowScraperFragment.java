@@ -1,0 +1,847 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
+package com.archos.mediacenter.video.info;
+
+import android.app.Activity;
+import android.content.ContentProviderOperation;
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.Context;
+import android.content.Intent;
+import android.content.OperationApplicationException;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Message;
+import android.os.RemoteException;
+import androidx.fragment.app.Fragment;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.View.OnClickListener;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.AdapterView;
+import android.widget.AdapterView.OnItemClickListener;
+import android.widget.EditText;
+import android.widget.ListView;
+import android.widget.TextView;
+import android.widget.TextView.OnEditorActionListener;
+
+import com.archos.mediacenter.utils.trakt.TraktService;
+import com.archos.mediacenter.video.R;
+import com.archos.mediacenter.video.browser.adapters.object.Base;
+import com.archos.mediacenter.video.utils.ScraperResultsAdapter;
+import com.archos.mediaprovider.video.ScraperStore;
+import com.archos.mediaprovider.video.VideoStore;
+import com.archos.mediascraper.BaseTags;
+import com.archos.mediascraper.DebugTimer;
+import com.archos.mediascraper.EpisodeTags;
+import com.archos.mediascraper.NfoWriter;
+import com.archos.mediascraper.ScrapeDetailResult;
+import com.archos.mediascraper.Scraper;
+import com.archos.mediascraper.ScraperImage;
+import com.archos.mediascraper.SearchResult;
+import com.archos.mediascraper.ShowTags;
+import com.archos.mediascraper.TagsFactory;
+import com.archos.mediascraper.preprocess.SearchInfo;
+import com.archos.mediascraper.preprocess.SearchPreprocessor;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class VideoInfoShowScraperFragment extends Fragment implements
+        OnItemClickListener, OnClickListener, OnEditorActionListener,
+        Handler.Callback {
+
+    private static final Logger log = LoggerFactory.getLogger(VideoInfoShowScraperFragment.class);
+    public static final String SHOW_ID = "show_id";
+
+    protected Scraper mScraper;
+
+    private SearchTask mCurrentSearchTask;
+    private ShowTags mShowTag;
+    private final List<ProgressItem> mResultsList;
+    // Search results kept around after the search task itself has finished, so that a
+    // full-seasons fetch can still be issued for the clicked candidate at save time
+    // (see onItemClick): by the time results are shown, mCurrentSearchTask is usually
+    // already null, so it cannot be relied upon to trigger that fetch.
+    private volatile List<SearchResult> mLastMatches;
+
+    private ListView mListView;
+    private ScraperResultsAdapter mAdapter;
+
+    private View mSearchContainer;
+    private View mProgressContainer;
+    private View mResultContainer;
+    private TextView mMessage;
+
+    private View mSearchButton;
+    private EditText mSearchEdTxt;
+
+    private Handler mHandler;
+
+    private DisplayState mDisplayState;
+    private View mView;
+    private SearchInfo mSearchInfo;
+
+    public VideoInfoShowScraperFragment() {
+        if (log.isDebugEnabled()) log.debug("CTOR");
+        mResultsList = new ArrayList<ProgressItem>();
+    }
+
+    // ---------------------- FRAGMENT LIFECYCLE ---------------------------- //
+
+    @Override
+    public void onAttach(Context context) {
+        super.onAttach(context);
+        mScraper = new Scraper(context);
+    }
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        if (log.isDebugEnabled()) log.debug("onCreate savedInstanceState={}", savedInstanceState);
+        super.onCreate(savedInstanceState);
+
+        mSearchInfo = SearchPreprocessor.instance().parseFileBased(Uri.parse("/foo.avi"), Uri.parse("/foo.avi"));
+        mHandler = new Handler(Looper.getMainLooper(), this);
+
+        mDisplayState = DisplayState.SEARCH_INITIAL;
+    }
+
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container,
+                             Bundle savedInstanceState) {
+        mView = inflater.inflate(R.layout.video_info_scraper_search, container, false);
+        return mView;
+    }
+
+    @SuppressWarnings("deprecation") // getSerializableExtra: API 33+ branch uses typed form; else branch suppressed
+    @Override
+    public void onViewCreated(View view, Bundle savedInstanceState) {
+        if (log.isDebugEnabled()) log.debug("onViewCreated");
+        mListView = (ListView) mView.findViewById(R.id.list);
+        mListView.setOnItemClickListener(this);
+        mListView.setAdapter(mAdapter);
+
+        mSearchContainer = mView.findViewById(R.id.custom_search_container);
+        mProgressContainer = mView.findViewById(R.id.progress_group);
+        mResultContainer = mView.findViewById(R.id.search_results_group);
+        mMessage = (TextView) mView.findViewById(R.id.message);
+
+        mSearchButton = mView.findViewById(R.id.search);
+        mSearchButton.setOnClickListener(this);
+
+        mView.findViewById(R.id.cancel).setOnClickListener(this);
+
+        mSearchEdTxt = (EditText) mView.findViewById(R.id.custom_search_edittext);
+        mSearchEdTxt.setHint(R.string.video_info_custom_search_show_hint);
+        mSearchEdTxt.setOnEditorActionListener(this);
+
+        // limit the way the window is adjusted when softkeyboard is opened
+        getActivity().getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN);
+
+        setInfoItem(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ? getActivity().getIntent().getSerializableExtra(VideoInfoScraperActivity.EXTRA_SHOW, Base.class)
+                : (Base) getActivity().getIntent().getSerializableExtra(VideoInfoScraperActivity.EXTRA_SHOW));
+
+        // restore display state
+        setDisplayState(mDisplayState);
+    }
+
+    // onActivityCreated
+
+    @Override
+    public void onStart() {
+        if (log.isDebugEnabled()) log.debug("onStart");
+        resumeCurrentTask();
+        super.onStart();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // limit the way the window is adjusted when softkeyboard is opened
+        getActivity().getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN);
+        hideSoftKbd();
+    }
+    // -- running
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        hideSoftKbd();
+    }
+
+    @Override
+    public void onStop() {
+        if (log.isDebugEnabled()) log.debug("onStop");
+        pauseCurrentTask();
+        super.onStop();
+    }
+
+    @Override
+    public void onDestroyView() {
+        if (log.isDebugEnabled()) log.debug("onDestroyView");
+        super.onDestroyView();
+        // null references to views
+        mSearchContainer = null;
+        mProgressContainer = null;
+        mResultContainer = null;
+        mSearchEdTxt = null;
+        mListView = null;
+        mMessage = null;
+        mSearchButton = null;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (log.isDebugEnabled()) log.debug("onDestroy");
+        cancelCurrentTask();
+        super.onDestroy();
+    }
+
+    @Override
+    public void onDetach() {
+        if (log.isDebugEnabled()) log.debug("onDetach");
+        super.onDetach();
+        mScraper = null;
+    }
+
+    public void setInfoItem(Base item) {
+        if (log.isDebugEnabled()) log.debug("setInfoItem");
+
+        ShowTags newTag = (ShowTags) item.getFullScraperTags(getActivity());
+        long oldId = mShowTag != null ? mShowTag.getId() : 0;
+        long newId = newTag != null ? newTag.getId() : 0;
+        if (log.isDebugEnabled()) log.debug("setInfoItem: old:{} new:{}", oldId, newId);
+        if (oldId != newId) {
+            mShowTag = newTag;
+        }
+        if (mShowTag != null && mSearchEdTxt != null) {
+            String txt = mShowTag.getTitle();
+            mSearchEdTxt.setText(txt);
+            mSearchEdTxt.setSelection(txt != null ? txt.length() : 0);
+            mSearchEdTxt.setSelected(false);
+
+        }
+    }
+
+    // ---------------------- IMPLEMENTS Handler.Callback ------------------- //
+    public boolean handleMessage(Message msg) {
+        // the only message we ever get is send once saving is complete
+        if (isVisible()) {
+            Intent intent = new Intent();
+            intent.putExtra(SHOW_ID, msg.arg1);
+            getActivity().setResult(Activity.RESULT_OK, intent);
+            getActivity().finish();
+        }
+        return true;
+    }
+
+    // ---------------------- IMPLEMENTS OnItemClickListener ---------------- //
+    public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+        if (log.isDebugEnabled()) log.debug("onItemClick");
+        SearchResult result = (mLastMatches != null && position < mLastMatches.size())
+                ? mLastMatches.get(position) : null;
+        if (result != null) {
+            // Always fetch fresh, full-seasons details for the actual save: the per-candidate
+            // preview (mResultsList/epMap) only ever covers a single season, so reusing it here
+            // would silently overwrite every other season's episodes with blank placeholder
+            // tags (aos-AVP#1838).
+            if (log.isDebugEnabled()) log.debug("onItemClick: fetching full-seasons details for save");
+            cancelCurrentTask();
+            SaveTask.createAndRun(getActivity(), result, mShowTag, mHandler.obtainMessage());
+        } else {
+            log.error("onItemClick: failed to save, no matching search result for position {}", position);
+        }
+        setDisplayState(DisplayState.APPLY_RESULT);
+    }
+
+    // ---------------------- IMPLEMENTS OnClickListener -------------------- //
+    public void onClick(View v) {
+        if (log.isDebugEnabled()) log.debug("onClick");
+
+        int viewId = v.getId();
+        if (viewId == R.id.cancel) {
+            hideSoftKbd();
+            cancelCurrentTask();
+            getActivity().finish();
+        } else if (viewId == R.id.search) {
+            hideSoftKbd();
+            startSearch();
+        } else {
+            log.error("Click on {} not supported.", v);
+        }
+    }
+
+    // ---------------------- IMPLEMENTS OnEditorActionListener ------------- //
+    public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+        if (log.isDebugEnabled()) log.debug("onEditorAction");
+        mSearchButton.callOnClick();
+        return true;
+    }
+
+    // ---------------------- DISPLAY STATE HANDLING ------------------------ //
+    private enum DisplayState {
+        SEARCH_INITIAL,
+        SEARCH_SEARCHING,
+        SEARCH_NORESULT,
+        SEARCH_RESULT,
+        APPLY_RESULT
+    }
+
+    private void setDisplayState(DisplayState state) {
+        if (log.isDebugEnabled()) log.debug("setDisplayState:{}", state.name());
+        mDisplayState = state;
+        switch (state) {
+            case SEARCH_INITIAL:
+                setVisibility(mSearchContainer, true);
+                setVisibility(mMessage, true);
+                setText(mMessage, getActivity(), 0);
+                setVisibility(mProgressContainer, false);
+                setVisibility(mResultContainer, false);
+                break;
+            case SEARCH_SEARCHING:
+                setVisibility(mSearchContainer, true);
+                setVisibility(mMessage, false);
+                setVisibility(mProgressContainer, true);
+                setVisibility(mResultContainer, false);
+                break;
+            case SEARCH_NORESULT:
+                setVisibility(mSearchContainer, true);
+                setVisibility(mMessage, true);
+                setText(mMessage, getActivity(), R.string.scrap_show_no_result);
+                setVisibility(mProgressContainer, false);
+                setVisibility(mResultContainer, false);
+                break;
+            case SEARCH_RESULT:
+                setVisibility(mSearchContainer, true);
+                setVisibility(mMessage, false);
+                setVisibility(mProgressContainer, false);
+                setVisibility(mResultContainer, true);
+                break;
+            case APPLY_RESULT:
+                setVisibility(mSearchContainer, false);
+                setVisibility(mMessage, false);
+                setVisibility(mProgressContainer, true);
+                setVisibility(mResultContainer, false);
+                break;
+            default:
+                // state == null !?
+                break;
+        }
+    }
+
+    private static void setVisibility(View view, boolean visible) {
+        if (view != null) {
+            view.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private static void setText(TextView view, Context context, int resId) {
+        if (view != null && context != null) {
+            view.setText(resId > 0 ? context.getString(resId) : null);
+        }
+    }
+
+    // ---------------------- PRIVATE IMPLEMENATION ------------------------- //
+    private void hideSoftKbd() {
+        if (mSearchEdTxt != null) {
+            InputMethodManager imm = (InputMethodManager) getActivity().getSystemService(Context.INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(mSearchEdTxt.getWindowToken(), 0);
+        }
+    }
+
+    private void pauseCurrentTask() {
+        if (log.isDebugEnabled()) log.debug("pauseCurrentTask");
+        if (mCurrentSearchTask != null) {
+            mCurrentSearchTask.pause();
+        }
+    }
+
+    private void resumeCurrentTask() {
+        if (log.isDebugEnabled()) log.debug("resumeCurrentTask");
+        if (mCurrentSearchTask != null) {
+            mCurrentSearchTask.resume();
+        }
+    }
+
+    private void cancelCurrentTask() {
+        if (log.isDebugEnabled()) log.debug("cancelCurrentTask");
+        if (mCurrentSearchTask != null) {
+            // cancel before resume so it exits after waiting
+            mCurrentSearchTask.cancel();
+            mCurrentSearchTask.resume();
+            mCurrentSearchTask = null;
+        }
+        setDisplayState(DisplayState.SEARCH_INITIAL);
+    }
+
+    private void startSearch() {
+        if (log.isDebugEnabled()) log.debug("startSearch");
+        // make sure there is no old task
+        cancelCurrentTask();
+        // start searching
+        mCurrentSearchTask = new SearchTask();
+        mCurrentSearchTask.execute(mSearchEdTxt.getText().toString());
+        setDisplayState(DisplayState.SEARCH_SEARCHING);
+    }
+
+    protected void onUpdateProgress(ProgressItem item) {
+        if (log.isDebugEnabled()) log.debug("onUpdateProgress:{}", item);
+        if (item.position < 0) {
+            mResultsList.clear();
+            mAdapter = new ScraperResultsAdapter(getActivity(),null, item.list);
+            mListView.setAdapter(mAdapter);
+            if (item.list != null && item.list.size() > 0) {
+                setDisplayState(DisplayState.SEARCH_RESULT);
+                //mAdapter.setResultList(item.list);
+                mAdapter.notifyDataSetChanged();
+            } else {
+                setDisplayState(DisplayState.SEARCH_NORESULT);
+            }
+        } else {
+            BaseTags tag = item.tag;
+            if (tag instanceof EpisodeTags) {
+                mResultsList.add(item);
+                EpisodeTags epTag = (EpisodeTags) tag;
+
+                mAdapter.updateItemData(item.position, epTag);
+                mAdapter.setItemsUpdated(item.position + 1);
+                int first = mListView.getFirstVisiblePosition();
+                int last = mListView.getLastVisiblePosition();
+                int our = item.position;
+                if (first <= our && last >= our)
+                    mAdapter.notifyDataSetChanged();
+            }
+        }
+    }
+
+    // ---------------------- SEARCH VIA SCRAPER SERVICE -------------------- //
+    protected void onSearchFinished() {
+        if (log.isDebugEnabled()) log.debug("onSearchFinished");
+        mCurrentSearchTask = null;
+    }
+
+    static class ProgressItem {
+
+        public final List<SearchResult> list;
+        public final BaseTags tag;
+        public final HashMap<String, EpisodeTags> epMap;
+        public final int position;
+
+        public ProgressItem(List<SearchResult> list) {
+            this.list = list;
+            position = -1;
+            tag = null;
+            epMap = null;
+        }
+
+        public ProgressItem(BaseTags tag, HashMap<String, EpisodeTags> epMap, int position) {
+            list = null;
+            this.position = position;
+            this.tag = tag;
+            this.epMap = epMap;
+        }
+    }
+
+    private class SearchTask {
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private volatile boolean isCancelled = false;
+
+        private volatile boolean mPause;
+        private final Object mWaitObject = new Object();
+
+        public SearchTask() { /* empty */ }
+
+        public void pause() {
+            synchronized (mWaitObject) {
+                mPause = true;
+            }
+        }
+
+        public void resume() {
+            synchronized (mWaitObject) {
+                mPause = false;
+                mWaitObject.notifyAll();
+            }
+        }
+
+        private void checkPause() {
+            if (!mPause) return;
+            synchronized (mWaitObject) {
+                while (mPause) {
+                    if (log.isDebugEnabled()) log.debug("checkPause - Paused");
+                    try {
+                        mWaitObject.wait();
+                    } catch (InterruptedException e) {
+                        if (log.isDebugEnabled()) log.debug("checkPause - InterruptedException");
+                        // expected
+                    }
+                }
+            }
+        }
+
+        void execute(String query) {
+            executor.execute(() -> {
+                try {
+                    if (isCancelled || Thread.currentThread().isInterrupted()) return;
+                    if (query != null && mScraper != null) {
+                        checkPause();
+                        if (isCancelled) return;
+                        // search for query + " S1E1" so we get show results only
+                        mSearchInfo.setUserInput(query + " S1E1");
+                        List<SearchResult> matches = mScraper.getAllMatches(mSearchInfo).results;
+                        mLastMatches = matches;
+                        publishProgressSafe(new ProgressItem(matches));
+                        int count = matches != null ? matches.size() : 0;
+                        int current = 0;
+                        while (!isCancelled && current < count) {
+                            Bundle b = new Bundle();
+                            b.putBoolean(Scraper.ITEM_REQUEST_ALL_EPISODES, true);
+                            b.putBoolean(Scraper.ITEM_REQUEST_REFRESH_SHOW_METADATA, true);
+                            checkPause();
+                            if (isCancelled) return;
+                            BaseTags tag = null;
+                            HashMap<String, EpisodeTags> epMap = null;
+                            if (log.isDebugEnabled()) log.debug("mScraperService.getDetailsSpecial - {}", current);
+                            ScrapeDetailResult detail = Scraper.getDetails(matches.get(current), b);
+                            if (detail.isOkay()) {
+                                tag = detail.tag;
+                                Bundle episodeList = detail.extras;
+                                epMap = toMap(episodeList);
+                            }
+                            publishProgressSafe(new ProgressItem(tag, epMap, current));
+                            current++;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.error("SearchTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+                if (isCancelled) return;
+                handler.post(() -> {
+                    if (isCancelled) return;
+                    onSearchFinished();
+                });
+            });
+        }
+
+        private void publishProgressSafe(ProgressItem item) {
+            synchronized (mWaitObject) {
+                checkPause();
+                if (isCancelled) return;
+                handler.post(() -> {
+                    if (isCancelled) return;
+                    if (log.isDebugEnabled()) log.debug("publishProgressSafe got item");
+                    onUpdateProgress(item);
+                });
+            }
+        }
+
+        @SuppressWarnings("deprecation") // getParcelable: API 33+ branch uses typed form; else branch suppressed
+        private HashMap<String, EpisodeTags> toMap(Bundle b) {
+            int size = b != null ? b.size() : 0;
+            HashMap<String, EpisodeTags> result = new HashMap<String, EpisodeTags>(size);
+            if (b != null) {
+                b.setClassLoader(BaseTags.class.getClassLoader());
+                for (String key : b.keySet()) {
+                    result.put(key, Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            ? b.getParcelable(key, EpisodeTags.class)
+                            : b.<EpisodeTags>getParcelable(key));
+                }
+            }
+            return result;
+        }
+
+        void cancel() {
+            isCancelled = true;
+            executor.shutdown(); // mayInterruptIfRunning=false: let thread exit via isCancelled check
+        }
+    }
+
+    static class SaveItem {
+        ShowTags target;
+        Map<String, EpisodeTags> source;
+        Message sendOnSuccess;
+    }
+
+    /**
+     * Fetches full, all-seasons details for a single confirmed show selection (see
+     * onItemClick) and hands the result off to {@link EpSaveTask}. Kept separate from the
+     * per-candidate preview fetch in {@link SearchTask}, which only ever fetches one season
+     * for performance.
+     */
+    private static class SaveTask {
+        public static void createAndRun(Context context, SearchResult result, ShowTags target, Message message) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            executor.execute(() -> {
+                try {
+                    Bundle b = new Bundle();
+                    b.putBoolean(Scraper.ITEM_REQUEST_ALL_EPISODES, true);
+                    b.putBoolean(Scraper.ITEM_REQUEST_REFRESH_SHOW_METADATA, true);
+                    b.putBoolean(Scraper.ITEM_REQUEST_ALL_SEASONS, true);
+                    ScrapeDetailResult detail = Scraper.getDetails(result, b);
+                    if (detail.isOkay()) {
+                        SaveItem item = new SaveItem();
+                        item.source = toMap(detail.extras);
+                        item.target = target;
+                        item.sendOnSuccess = message;
+                        EpSaveTask.createAndRun(context, item);
+                    } else {
+                        log.warn("SaveTask: full-seasons details fetch failed for {}", result);
+                    }
+                } catch (Exception e) {
+                    log.error("SaveTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+            });
+        }
+
+        @SuppressWarnings("deprecation") // getParcelable: API 33+ branch uses typed form; else branch suppressed
+        private static HashMap<String, EpisodeTags> toMap(Bundle b) {
+            int size = b != null ? b.size() : 0;
+            HashMap<String, EpisodeTags> result = new HashMap<String, EpisodeTags>(size);
+            if (b != null) {
+                b.setClassLoader(BaseTags.class.getClassLoader());
+                for (String key : b.keySet()) {
+                    result.put(key, Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            ? b.getParcelable(key, EpisodeTags.class)
+                            : b.<EpisodeTags>getParcelable(key));
+                }
+            }
+            return result;
+        }
+    }
+
+    private static class EpSaveTask {
+        private final Context mContext;
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        public static void createAndRun(Context context, SaveItem item) {
+            new EpSaveTask(context).execute(item);
+        }
+
+        public EpSaveTask(Context context) {
+            mContext = context;
+        }
+
+        void execute(SaveItem item) {
+            executor.execute(() -> {
+                try {
+                    if (item != null) {
+                        // step 1: find all episodes in database that belong to this show
+                        List<EpisodeTags> episodeList = getEpisodeList(item.target);
+                        // step 2: save new show / episode info for those
+                        long showID = handleSave(item, episodeList);
+                        Message m = item.sendOnSuccess;
+                        m.arg1 = (int) showID;
+                        if (log.isDebugEnabled()) log.debug("EpSaveTask: save finished, sending message");
+                        if (m != null)
+                            m.sendToTarget();
+                    }
+                } catch (Exception e) {
+                    log.error("EpSaveTask failed", e);
+                } finally {
+                    executor.shutdown();
+                }
+            });
+        }
+
+        private List<EpisodeTags> getEpisodeList(ShowTags sTag) {
+            ArrayList<EpisodeTags> result = new ArrayList<EpisodeTags>();
+            if (sTag != null) {
+                if (log.isDebugEnabled()) log.debug("EpSaveTask.getEpisodeList: {}", sTag.getTitle());
+                // get EpisodeTags by ShowId
+                long sId = sTag.getId();
+                ContentResolver cr = mContext.getContentResolver();
+                Uri uri = VideoStore.Video.Media.EXTERNAL_CONTENT_URI;
+                String selection = VideoStore.Video.VideoColumns.SCRAPER_SHOW_ID + "=?";
+                String[] selectionArgs = new String[] {
+                        String.valueOf(sId)
+                };
+                String sortOrder = null;
+                Cursor c = cr.query(uri, TagsFactory.VIDEO_COLUMNS, selection, selectionArgs, sortOrder);
+                List<BaseTags> tagsList = TagsFactory.buildTagsFromVideoCursor(c);
+                if (c != null)
+                    c.close();
+                // add every EpisodeTags (should be all) to result list
+                if (tagsList != null) {
+                    result.ensureCapacity(tagsList.size());
+                    for (BaseTags bTag : tagsList) {
+                        if (bTag instanceof EpisodeTags) {
+                            EpisodeTags epTag = (EpisodeTags) bTag;
+                            result.add(epTag);
+                        }
+                    }
+                }
+            } else {
+                log.warn("EpSaveTask.getEpisodeList: sTag null!");
+            }
+            return result;
+        }
+
+        private long handleSave(SaveItem item, List<EpisodeTags> targetList) {
+            // TODO make this nicer
+            NfoWriter.ExportContext exportContext = null;
+            if (NfoWriter.isNfoAutoExportEnabled(mContext)) {
+                exportContext = new NfoWriter.ExportContext();
+            }
+
+            DebugTimer t = new DebugTimer();
+            if (item != null &&
+                    item.source != null && item.source.size() > 0 &&
+                    targetList != null && targetList.size() > 0) {
+
+                ShowTags targetShow = item.source.values().iterator().next().getShowTags();
+                long targetShowId = targetShow.save(mContext, 0);
+                int size = targetList.size();
+                int i = 1;
+                ArrayList<ContentProviderOperation> opList = new ArrayList<ContentProviderOperation>();
+                Map<String, Long> poster2IdMap = createPosterIdMap(mContext, targetShowId);
+                for (EpisodeTags epTag : targetList) {
+                    if (log.isDebugEnabled()) log.debug("handleSave: saving {} of {} episodes.", (i++), size);
+                    EpisodeTags targetEpTag = getEpisode(item.source, epTag.getEpisode(), epTag.getSeason(), targetShow);
+                    targetEpTag.setVideoId(epTag.getVideoId());
+                    targetEpTag.setShowId(targetShowId);
+                    targetEpTag.setFile(epTag.getFile());
+                    targetEpTag.addSaveOperation(opList, poster2IdMap);
+                    targetEpTag.downloadPoster(mContext);
+                    if (exportContext != null) {
+                        Uri file = targetEpTag.getFile();
+                        if (file != null) {
+                            try {
+                                NfoWriter.export(file, targetEpTag, exportContext);
+                            } catch (IOException e) {
+                                // ignored, probably not writable smb share
+                            }
+                        }
+                    }
+                }
+                if (exportContext != null) {
+                    // drain the queued NFO exports for this batch before returning
+                    NfoWriter.awaitPendingExports();
+                }
+                if (log.isDebugEnabled()) log.debug("preparations took:{}", t.step());
+                if (opList.size() > 0) {
+                    try {
+                        mContext.getContentResolver().applyBatch(ScraperStore.AUTHORITY, opList);
+                    } catch (RemoteException e) {
+                        log.error("handleSave failed", e);
+                    } catch (OperationApplicationException e) {
+                        log.error("handleSave failed", e);
+                    }
+                }
+                TraktService.onNewVideo(mContext);
+                if (log.isDebugEnabled()) log.debug("handleSave: saving in the end:{} thats:{}", t.step(), t.total());
+                return targetShowId;
+            }
+            return -1;
+        }
+
+        private static final String[] POSTER_ID_PROJ = {
+                ScraperStore.ShowPosters.ID,        // 0
+                ScraperStore.ShowPosters.LARGE_FILE // 1
+        };
+        private static Map<String, Long> createPosterIdMap(Context context, long showId) {
+            HashMap<String, Long> result = new HashMap<String, Long>();
+            ContentResolver cr = context.getContentResolver();
+            Uri uri = ContentUris.withAppendedId(ScraperStore.ShowPosters.URI.BY_SHOW_ID, showId);
+            Cursor c = cr.query(uri, POSTER_ID_PROJ, null, null, null);
+            if (c != null) {
+                while (c.moveToNext()) {
+                    Long id = Long.valueOf(c.getLong(0));
+                    String path = c.getString(1);
+                    result.put(path, id);
+                }
+                c.close();
+            }
+            return result;
+        }
+
+        private EpisodeTags getEpisode(Map<String, EpisodeTags> allEpisodes, int epnum, int season, ShowTags showTags) {
+            if (log.isDebugEnabled()) log.debug("buildTag allEpisodes.size={} epnum={}, season={}, showId={}", allEpisodes.size(), epnum, season, showTags.getId());
+            EpisodeTags episodeTag = null;
+            if (!allEpisodes.isEmpty()) {
+                // Note: allEpisodes is keyed "showId|season|episode|language" (see
+                // ShowIdEpisodes.getEpisodes), not "season|episode", so match by field instead.
+                if (log.isDebugEnabled()) log.debug("buildTag: allEpisodes not empty trying to find s{}e{}", season, epnum);
+                for (EpisodeTags candidate : allEpisodes.values()) {
+                    if (candidate.getSeason() == season && candidate.getEpisode() == epnum) {
+                        episodeTag = candidate;
+                        break;
+                    }
+                }
+            }
+            if (episodeTag == null) {
+                if (log.isDebugEnabled()) log.debug("buildTag: shoot episode not in allEpisodes");
+                episodeTag = new EpisodeTags();
+                // assume episode / season of request
+                episodeTag.setSeason(season);
+                episodeTag.setEpisode(epnum);
+                episodeTag.setShowTags(showTags);
+                // also check if there is a poster
+                List<ScraperImage> posters = showTags.getPosters();
+                if (posters != null) {
+                    if (log.isDebugEnabled()) log.debug("buildTag: posters not null");
+                    for (ScraperImage image : posters) {
+                        if (image.getSeason() == season) {
+                            if (log.isDebugEnabled()) log.debug("buildTag: {} season poster s{} {}", showTags.getTitle(), season, image.getLargeUrl());
+                            episodeTag.setPosters(image.asList());
+                            episodeTag.downloadPoster(mContext);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                if (log.isDebugEnabled()) log.debug("buildTag: episodeTag not null");
+                if (episodeTag.getPosters() == null) {
+                    log.warn("buildTag: {} has null posters!", episodeTag.getTitle());
+                } else if (episodeTag.getPosters().isEmpty()) {
+                    log.warn("buildTag: {} has empty posters!", episodeTag.getTitle());
+                }
+                if (episodeTag.getDefaultPoster() == null) {
+                    log.warn("buildTag: {} has no defaultPoster! Should add default show one.", episodeTag.getTitle());
+                }
+                if (episodeTag.getShowTags() == null) {
+                    log.warn("buildTag: {} has empty showTags!", episodeTag.getTitle());
+                }
+                // download still & poster because episode has been selected here
+                episodeTag.downloadPicture(mContext);
+                episodeTag.downloadPoster(mContext);
+            }
+            if (log.isDebugEnabled()) log.debug("buildTag: {} {} {}", episodeTag.getShowTitle(), episodeTag.getShowId(), episodeTag.getTitle());
+            return episodeTag;
+        }
+    }
+
+}

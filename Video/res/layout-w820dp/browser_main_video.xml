@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+This is the main view of the video browser with a cover roll, a list
+category, and contents.
+-->
+
+<LinearLayout
+
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:ads="http://schemas.android.com/apk/res-auto"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:background="@android:color/transparent"
+    android:layout_width="match_parent"
+    android:fitsSystemWindows="true"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/main_toolbar"
+        android:layout_height="wrap_content"
+        android:layout_width="match_parent"
+        android:background="@color/leanback_background"
+        android:minHeight="?attr/actionBarSize"
+        app:titleTextAppearance="@style/ToolbarTitle"
+        />
+
+    <RelativeLayout
+        android:id="@+id/browser_layout"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:splitMotionEvents="true" >
+
+
+
+        <!-- Handle category view and global resume -->
+
+        <LinearLayout
+            android:id="@+id/left_view"
+            android:layout_width="wrap_content"
+            android:elevation="4dp"
+            android:translationZ="4dp"
+            android:layout_alignParentStart="true"
+            android:layout_height="match_parent"
+            android:orientation="vertical" >
+
+            <!-- Category view at the middle -->
+
+            <androidx.fragment.app.FragmentContainerView
+                android:id="@+id/category"
+                android:layout_width="@dimen/categories_list_width"
+                android:layout_height="0dip"
+                android:layout_weight="1"
+                android:name="com.archos.mediacenter.video.browser.BrowserCategoryVideo" />
+
+            <!-- Global resume at the middle and below the category view -->
+
+            <ViewStub
+                android:id="@+id/global_resume_stub"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/global_resume_video_height"
+                android:layout="@layout/browser_resume_video" />
+        </LinearLayout>
+
+        <!-- Content view at the right -->
+
+        <FrameLayout
+            android:id="@+id/content"
+            android:layout_width="match_parent"
+            android:layout_toEndOf="@+id/left_view"
+            android:layout_height="match_parent" />
+
+        <!-- Private mode indicator icon -->
+        <ImageView
+            android:id="@+id/private_mode_indicator"
+            android:layout_width="@dimen/private_mode_indicator_size"
+            android:layout_height="@dimen/private_mode_indicator_size"
+            android:layout_alignParentBottom="true"
+            android:layout_alignParentEnd="true"
+            android:layout_margin="@dimen/private_mode_indicator_margin"
+            android:src="@drawable/ic_incognito"
+            android:visibility="gone"
+            android:alpha="0.6"
+            android:importantForAccessibility="no"
+        android:contentDescription="@null" />
+
+    </RelativeLayout>
+
+
+</LinearLayout>

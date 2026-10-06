@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:exitFadeDuration="0">
+
+    <!-- Pressed state - grey rounded rectangle -->
+    <item android:state_pressed="true">
+        <shape xmlns:android="http://schemas.android.com/apk/res/android">
+            <solid android:color="@color/lightgrey"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+
+    <!-- Activated/selected state - grey rounded rectangle -->
+    <item android:state_activated="true">
+        <shape xmlns:android="http://schemas.android.com/apk/res/android">
+            <solid android:color="@color/lightgrey"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+
+    <!-- Focused state - grey rounded rectangle -->
+    <item android:state_focused="true">
+        <shape xmlns:android="http://schemas.android.com/apk/res/android">
+            <solid android:color="@color/lightgrey"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+
+    <!-- Default state - transparent -->
+    <item android:drawable="@android:color/transparent"/>
+
+</selector>

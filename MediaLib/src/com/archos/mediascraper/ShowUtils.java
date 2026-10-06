@@ -1,0 +1,331 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediascraper;
+
+import android.net.Uri;
+import android.util.Log;
+import android.util.Pair;
+
+import com.archos.filecorelibrary.FileUtils;
+import com.archos.mediascraper.preprocess.ParseUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static com.archos.mediascraper.StringUtils.removeTrailingSlash;
+import static com.archos.mediascraper.preprocess.ParseUtils.BRACKETS;
+import static com.archos.mediascraper.preprocess.ParseUtils.getCountryOfOrigin;
+import static com.archos.mediascraper.preprocess.ParseUtils.parenthesisYearExtractor;
+import static com.archos.mediascraper.preprocess.ParseUtils.removeAfterEmptyParenthesis;
+import static com.archos.mediascraper.preprocess.ParseUtils.yearExtractorEndString;
+
+/**
+ * Class used to parse the file names and try to guess if we have a tv show.
+ */
+public final class ShowUtils {
+
+    private static final Logger log = LoggerFactory.getLogger(ShowUtils.class);
+
+    // disable for now the SxxEyy-showName does not exist and makes ./serie/The Flash/S02/S02E01 lahlah.mkv not identified
+    private static final boolean ENABLE_PATTERNS_EPISODE_FIRST = false;
+
+    public static final String EPNUM = "epnum";
+    public static final String SEASON = "season";
+    public static final String SHOW = "show";
+    public static final String YEAR = "year";
+    public static final String ORIGIN = "origin";
+
+    /** These are considered equivalent to space */
+    public static final char[] REPLACE_ME = new char[] {
+        '.', // "The.Good.Wife" will not be found
+        '_', // "The_Good_Wife" would be found but we need the clean name for local display
+    };
+
+    private ShowUtils() {
+        // do not make instances of me
+    }
+
+    // Separators: Punctuation or Whitespace
+    // remove the "(" and ")" in punctuation to avoid matching end parenthesis of date in "show (1987) s01e01 title.mkv"
+    private static final String SEP_OPTIONAL = "[[\\p{Punct}&&[^()]]\\s]*+";
+    private static final String SEP_MANDATORY = "[[\\p{Punct}&&[^()]]\\s]++";
+
+    // Name patterns where the show is present first. Examples below.
+    private static final Pattern[] patternsShowFirst = {
+            // almost anything that has S 00 E 00 in it and recognize shows with year as season number
+            // take 20xx or 19xx or xx as season number
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(?:s|seas|season)" + SEP_OPTIONAL + "(20\\d{2}|19\\d{2}|\\d{1,2})" + SEP_OPTIONAL + "(?:e|ep|episode)" + SEP_OPTIONAL + "(1?\\d{1,3})(?!\\d).*", Pattern.CASE_INSENSITIVE),
+            // [S]x[E] bracket format like Show.[13x07]
+            Pattern.compile("(.+?)" + SEP_OPTIONAL + "(?:\\[)" + SEP_OPTIONAL + "(\\d{1,3})" + SEP_OPTIONAL + "(?:x)" + SEP_OPTIONAL + "(\\d{1,3})" + SEP_OPTIONAL + "(?:\\])" + SEP_OPTIONAL + ".*", Pattern.CASE_INSENSITIVE),
+            // almost anything that has 00 x 00, note mandatory separator to fixe detection of movies 5.1x264 as Season 1 episode 264
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(20\\d{2}|19\\d{2}|\\d{1,2})" + SEP_OPTIONAL + "x" + SEP_MANDATORY + "(1?\\d{1,3})(?!\\d).*", Pattern.CASE_INSENSITIVE),
+            // special case to avoid x264 or x265
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(20\\d{2}|19\\d{2}|\\d{1,2})" + SEP_OPTIONAL + "x" + SEP_OPTIONAL + "(?!(?:264|265|720))(1?\\d{1,3})(?!\\d).*", Pattern.CASE_INSENSITIVE),
+            // Disable following pattern since it makes L.627 or OSS 117 movies identified as TV serie
+            // foo.103 and similar
+            // Note: can detect movies that contain 3 digit numbers like "127 hours" or shows that have such numbers in their name like "zoey 101"
+            // Limit first digit to be >0 in order not to identify "James Bond 007" as tv show
+            //Pattern.compile("(.+)" + SEP_MANDATORY + "(?!(?:264|265|720))([1-9])(\\d{2,2})" + SEP_MANDATORY + ".*", Pattern.CASE_INSENSITIVE),
+            // 4-digit SSEE format e.g. "Battlestar Galactica - 0208 - Final cut" -> Season 2, Episode 8
+            // Excludes year-prefixed numbers (19xx, 20xx) and resolution numbers preceded by 'x' (1920x1080)
+            // Also reject compact numbers followed by an explicit release year, e.g. "Chambre 1408 (2007)" is a movie, not S14E08.
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(?!(?:19|20)\\d{2})(?<![xX])([0-9]{2})([0-9]{2})(?!\\d)(?!" + SEP_MANDATORY + "(?:19|20)\\d{2}(?:$|" + SEP_MANDATORY + "))" + SEP_MANDATORY + ".*", Pattern.CASE_INSENSITIVE),
+            // Daily shows The Talk 2023 05 05 XviD-AFG [eztv].mkv -> s2023e0505 ou s2023e(m*31+d)
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(20\\d{2}|19\\d{2}|\\d{1,2})" + SEP_MANDATORY + "((\\d{2})" + SEP_MANDATORY + "(\\d{2})(?!\\d)).*", Pattern.CASE_INSENSITIVE),
+            // Match show EXX -> one season?
+            Pattern.compile("(.+?)" + SEP_MANDATORY + "(?:(?:s|seas|season)" + SEP_OPTIONAL + "(20\\d{2}|19\\d{2}|\\d{1,2})){0}" + SEP_OPTIONAL + "(?:e|ep|episode)" + SEP_OPTIONAL + "(1?\\d{1,3})(?!\\d).*", Pattern.CASE_INSENSITIVE),
+};
+    // Name patterns which begin with the number of the episode
+    private static final Pattern[] patternsEpisodeFirst = {
+            // anything that starts with S 00 E 00, text after "-" getting ignored
+            Pattern.compile(SEP_OPTIONAL + "(?:s|seas|season)" + SEP_OPTIONAL + "(\\d{1,2})" + SEP_OPTIONAL + "(?:e|ep|episode)" + SEP_OPTIONAL + "(1?\\d{1,3})(?!\\d)" + SEP_OPTIONAL + "([^-]*+).*", Pattern.CASE_INSENSITIVE),
+            // anything that starts with 00 x 00, text after "-" getting ignored like in "S01E15 - ShowName - Ignored - still ignored"
+            Pattern.compile(SEP_OPTIONAL + "(\\d{1,2})" + SEP_OPTIONAL + "x" + SEP_OPTIONAL + "(1?\\d{1,3})(?!\\d)" + SEP_OPTIONAL + "([^-]*+).*", Pattern.CASE_INSENSITIVE),
+        };
+
+    public static String cleanUpName(String name) {
+        name = ParseUtils.unifyApostrophes(name);
+        name = ParseUtils.removeNumbering(name);
+        name = ParseUtils.replaceAcronyms(name);
+        name = StringUtils.replaceAllChars(name, REPLACE_ME, ' ');
+        // Strip out everything else in brackets <[{( .. )})>, most of the time teams names, etc
+        name = StringUtils.replaceAll(name, "", BRACKETS);
+        // Collapse multiple consecutive spaces into single space
+        name = name.replaceAll("\\s+", " ");
+        return name.trim();
+    }
+
+    /**
+     *  Parse the filename and returns a Map containing the keys "show",
+     *  "season" and "epnum" and their associated values.
+     *  If the filename doesn't match a tv show pattern, returns null.
+     */
+    public static Map<String, String> parseShowName(String filename) {
+        if (log.isDebugEnabled()) log.debug("parseShowName: {}", filename);
+        String rawCountryOfOrigin = getCountryOfOrigin(filename).second;
+        filename = ParseUtils.cleanTvPatternInput(filename);
+        final HashMap<String, String> buffer = new HashMap<String, String>();
+        Pair<String, String> nameYear;
+        Pair<String, String> nameCountry;
+        String name;
+        for(Pattern regexp: patternsShowFirst) {
+            Matcher matcher = regexp.matcher(filename);
+            try {
+                if(matcher.find()) {
+                    nameYear = parenthesisYearExtractor(matcher.group(1));
+                    String year = nameYear.second;
+                    if (! ParseUtils.isValidYear(year)) year = null;
+                    // remove junk behind () that was containing year
+                    // applies to movieName (1928) junk -> movieName () junk -> movieName
+                    name = removeAfterEmptyParenthesis(nameYear.first);
+
+                    // Strip common garbage (like '720p' or '(FR)') to help year extractor find the year if it's followed by junk
+                    // Do this before cleanUpName so we don't lose original separators that garbage patterns expect
+                    String nameForYear = ParseUtils.removeGarbage(name).trim();
+                    nameForYear = cleanUpName(nameForYear);
+
+                    name = cleanUpName(name);
+                    nameCountry = getCountryOfOrigin(name);
+                    if (nameCountry.second == null && rawCountryOfOrigin != null) {
+                        nameCountry = new Pair<>(nameCountry.first, rawCountryOfOrigin);
+                    }
+
+                    if (year == null || year.isEmpty()) { // if year empty perhaps this is Eric.2024-s01e01, find year in the end of the string
+                        Pair<String, String> countryForYear = getCountryOfOrigin(nameForYear);
+                        nameYear = yearExtractorEndString(countryForYear.first);
+                        if (nameYear.first != null && ! nameYear.first.isEmpty()) { // do it only if the remaining name is not empty
+                            if (ParseUtils.isValidYear(nameYear.second)) {
+                                name = nameYear.first;
+                                year = nameYear.second;
+                                // If we successfully extracted the year from the garbage-stripped string,
+                                // we must update the final name to also be garbage-stripped.
+                                nameCountry = getCountryOfOrigin(cleanUpName(nameYear.first));
+                                if (nameCountry.second == null && rawCountryOfOrigin != null) {
+                                    nameCountry = new Pair<>(nameCountry.first, rawCountryOfOrigin);
+                                }
+                            }
+                        }
+                    }
+                    if (log.isDebugEnabled()) log.debug("getMatch: patternsShowFirst {} season {} episode {} year {} country {}", nameCountry.first, matcher.group(2), matcher.group(3), year, nameCountry.second);
+                    buffer.put(SHOW, nameCountry.first);
+                    String season = matcher.group(2);
+                    buffer.put(SEASON, (season == null || season.isEmpty()) ? "1" : season);
+                    buffer.put(EPNUM, matcher.group(3).replaceAll(SEP_MANDATORY, ""));
+                    buffer.put(YEAR, year);
+                    buffer.put(ORIGIN, nameCountry.second);
+                    return buffer;
+                }
+            } catch (IllegalArgumentException ignored) {}
+        }
+        if (ENABLE_PATTERNS_EPISODE_FIRST)
+            for(Pattern regexp: patternsEpisodeFirst) {
+                Matcher matcher = regexp.matcher(filename);
+                try {
+                    if(matcher.find()) {
+                        nameYear = parenthesisYearExtractor(matcher.group(3));
+                        String year = nameYear.second;
+                        if (! ParseUtils.isValidYear(year)) year = null;
+                        // remove junk behind () that was containing year
+                        // applies to movieName (1928) junk -> movieName () junk -> movieName
+                        name = removeAfterEmptyParenthesis(nameYear.first);
+
+                        // Strip common garbage (like '720p' or '(FR)') to help year extractor find the year if it's followed by junk
+                        // Do this before cleanUpName so we don't lose original separators that garbage patterns expect
+                        String nameForYear = ParseUtils.removeGarbage(name).trim();
+                        nameForYear = cleanUpName(nameForYear);
+
+                        name = cleanUpName(name);
+                        nameCountry = getCountryOfOrigin(name);
+                        if (nameCountry.second == null && rawCountryOfOrigin != null) {
+                            nameCountry = new Pair<>(nameCountry.first, rawCountryOfOrigin);
+                        }
+
+                        if (year == null || year.isEmpty()) { // if year empty perhaps this is Eric.2024-s01e01, find year in the end of the string
+                            Pair<String, String> countryForYear = getCountryOfOrigin(nameForYear);
+                            nameYear = yearExtractorEndString(countryForYear.first);
+                            if (nameYear.first != null && ! nameYear.first.isEmpty()) { // do it only if the remaining name is not empty
+                                if (ParseUtils.isValidYear(nameYear.second)) {
+                                    name = nameYear.first;
+                                    year = nameYear.second;
+                                    // If we successfully extracted the year from the garbage-stripped string,
+                                    // we must update the final name to also be garbage-stripped.
+                                    nameCountry = getCountryOfOrigin(cleanUpName(nameYear.first));
+                                    if (nameCountry.second == null && rawCountryOfOrigin != null) {
+                                        nameCountry = new Pair<>(nameCountry.first, rawCountryOfOrigin);
+                                    }
+                                }
+                            }
+                        }
+                        if (log.isDebugEnabled()) log.debug("getMatch: patternsEpisodeFirst {} season {} episode {} year {}", nameCountry.first, matcher.group(1), matcher.group(2), year);
+                        buffer.put(SHOW, nameCountry.first);
+                        buffer.put(SEASON, matcher.group(1));
+                        buffer.put(EPNUM, matcher.group(2));
+                        buffer.put(YEAR, year);
+                        buffer.put(ORIGIN, nameCountry.second);
+                        return buffer;
+                    }                } catch (IllegalArgumentException ignored) {}
+            }
+        return null;
+    }
+
+    /**
+     * Function to know if a given filename matches one of the patterns and as
+     * such, can have show and episode number extracted.
+     * Uses <b>searchString</b> instead of filename if present.
+     */
+    public static boolean isTvShow(Uri file, String searchString) {
+        String filename;
+        if (searchString != null && !searchString.isEmpty()) {
+            filename = searchString;
+        } else {
+            if (file == null)
+                return false;
+            filename = FileUtils.getName(file);
+        }
+        // remove trailing '/' if it exists
+        filename = ParseUtils.cleanTvPatternInput(removeTrailingSlash(filename));
+        if (log.isDebugEnabled()) log.debug("isTvShow: parsing {}", filename);
+        for(Pattern regexp: patternsShowFirst) {
+            Matcher m = regexp.matcher(filename);
+            try {
+                if(m.matches()) {
+                    if (log.isDebugEnabled()) log.debug("isTvShow: match found {}", regexp.toString());
+                    return true;
+                } else {
+                    if (log.isDebugEnabled()) log.debug("isTvShow: match not found {}", regexp.toString());
+                }
+            } catch (IllegalArgumentException ignored) {
+                if (log.isDebugEnabled()) log.debug("isTvShow: IllegalArgumentException");
+            }
+        }
+        if (ENABLE_PATTERNS_EPISODE_FIRST)
+            for(Pattern regexp: patternsEpisodeFirst) {
+            Matcher m = regexp.matcher(filename);
+            try {
+                if(m.matches())
+                    return true;
+            } catch (IllegalArgumentException ignored) {}
+        }
+        return false;
+    }
+
+    public static boolean isTvShow(String path) {
+        return isTvShow(Uri.parse(path), null);
+    }
+
+    /**
+     * Extracts a clean episode title from the portion of the filename after SxxExx.
+     * For example, from "Doctor.Who.2024.S02E00.Joy.to.the.World.1080p.10bit.WEBRip.6CH.x265.HEVC-PSA"
+     * with season=2, episode=0, returns "Joy to the World".
+     *
+     * @param filename the filename without extension
+     * @param season the season number
+     * @param episode the episode number
+     * @return the cleaned episode title, or null if not found or empty
+     */
+    public static String extractEpisodeTitle(String filename, int season, int episode) {
+        // build SxxExx pattern to find in filename (case insensitive), tolerating extra
+        // leading zeros in the episode number (e.g. "S01E018" for episode 18)
+        String sxePattern = String.format(Locale.ROOT, "S%02dE0*%d(?!\\d)", season, episode);
+        Matcher matcher = Pattern.compile(sxePattern, Pattern.CASE_INSENSITIVE).matcher(filename);
+        if (!matcher.find()) return null;
+
+        // take everything after SxxExx
+        String remainder = filename.substring(matcher.end());
+        if (remainder.isEmpty()) return null;
+
+        // strip leading separators
+        remainder = remainder.replaceAll("^[\\s._-]+", "");
+        if (remainder.isEmpty()) return null;
+
+        String cleaned = ParseUtils.cleanExtractedTitle(remainder);
+        if (cleaned == null || cleaned.isEmpty() || !isPlausibleEpisodeTitle(cleaned)) return null;
+        return cleaned;
+    }
+
+    /**
+     * Guards fuzzy title matching (see ShowScraper4#fuzzyMatchEpisodeByTitle) from running
+     * against leftover release-tag garbage that the static GARBAGE_* lists in ParseUtils don't
+     * happen to cover (e.g. unlisted release group names, resolution/codec remnants). A genuine
+     * episode title is expected to have some actual wording, not just a short, mostly non-letter
+     * token.
+     */
+    private static boolean isPlausibleEpisodeTitle(String title) {
+        String trimmed = title.trim();
+        if (trimmed.length() < 3) return false;
+        // require at least two consecutive letters somewhere, rejects tokens like "5.1", "264", "H265"
+        return trimmed.matches(".*\\p{L}{2,}.*");
+    }
+
+    public static String urlEncode(String input) {
+        String encode = "";
+        try {
+            encode = URLEncoder.encode(input, "UTF-8");
+        } catch (UnsupportedEncodingException e1) {
+            log.error("{} Error: {}", ShowUtils.class.getSimpleName(), e1, e1);
+        }
+        return encode;
+    }
+
+
+}

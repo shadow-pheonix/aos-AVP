@@ -1,0 +1,44 @@
+Nova est un lecteur vidéo open-source conçu pour les téléphones, tablettes et Android TV disponible sur https://github.com/nova-video-player/aos-AVP
+
+Lecteur universel:  
+- Lit les vidéos stockées sur votre ordinateur / serveur (FTP, SFTP, WebDAV) / NAS (SMB, UPnP)
+- Lit les vidéos stockées sur SDcard et sur disques USB externes 
+- Les vidéos des différentes sources sont regroupées dans une collection unifiée
+- Récupération automatique des descriptions et des posters des films et des séries TV
+- Téléchargement automatiques des sous-titres
+
+Le meilleur lecteur:
+- Décodage accéléré hardware pour la plupart des appareils et des formats vidéo
+- Support multi-piste audio et multi sous-titres
+- Formats de fichiers compatibles : MKV, MP4, AVI, WMV, FLV, etc.
+- Formats de sous-titres compatibles : SRT, SUB, ASS, SMI, etc.
+
+Parfait pour la TV :
+- Interface “leanback” spécialement pour Android TV
+- AC3/DTS passthrough (HDMI ou S/PDIF) pour les appareils compatibles: Nexus Player, NVidia SHIELD TV, boitiers TV à base Rockchip et AmLogic
+- Gestion de la 3D avec support des modes side-by-side et top-bottom sur les TV compatibles
+- “Audio Boost” pour augmenter le niveau sonore des fichiers mal encodés
+- “Mode nuit” pour faire varier dynamiquement le volume sonore
+
+Naviguer comme vous voulez:
+- Accès direct aux dernières vidéos ajoutées ou récemment jouées
+- Voir les films par nom, par genre, par année, par durée, par note
+- Voir les séries TV par saisons
+- Et toujours la navigation par dossiers
+
+Et encore plus: 
+- Partage du point de reprise entre différents appareils pour les fichiers sur votre réseau local
+- Récupération des descriptions et des posters à partir des fichiers NFO
+- Actualisation programmée des contenus réseau (sur interface TV leanback uniquement)
+- “Mode privé” pour désactiver temporairement l’historique de lecture
+- Ajustement manuel de la synchronisation des sous-titres
+- Ajustement manuel de la synchronisation audio/video
+- Suivez votre collection de vidéos et ce que vous avez regardé via Trakt
+
+En cas de problème ou de question, merci de nous joindre sur notre communauté Reddit à cette adresse : https://www.reddit.com/r/NovaVideoPlayer
+
+Si vous rencontrez des difficultés à décoder certaines vidéos, vous pouvez forcer le décodage logiciel dans les préférences de l'application.
+
+Toute contribution à la traduction de l'application via crowdin: https://crowdin.com/project/nova-video-player est bienvenue.
+
+NOVA est l'acronyme de "opeN sOurce Video plAyer".

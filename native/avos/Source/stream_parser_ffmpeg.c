@@ -1,0 +1,2724 @@
+/*
+ * Copyright 2017 Archos SA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "types.h"
+#include "global.h"
+#include "stream.h"
+#include "stream_parser.h"
+#include "debug.h"
+#include "astdlib.h"
+#include "util.h"
+#include "cbe.h"
+#include "linked_list.h"
+#include "astdlib.h"
+#include "mpeg2.h"
+#include "h264.h"
+#include "hevc.h"
+#include "file_info_priv.h"
+#include "iso639.h"
+#include "android_codec.h"
+#include "util.h"
+#include "dts.h"
+#include "stream_fd.h"
+
+#if defined(__APPLE__) && !defined(pread64)
+#define pread64 pread
+#endif
+
+#ifdef CONFIG_STREAM
+#ifdef CONFIG_FFMPEG_PARSER
+
+#include <libavutil/frame.h>
+#include <libavutil/mathematics.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/dict.h>
+#include <libavutil/dovi_meta.h>
+#include <libavutil/time.h>
+
+#include <string.h>
+#include <strings.h>
+#include <math.h>
+
+#define DBGS 	if(Debug[DBG_STREAM])
+#define DBGP 	if(Debug[DBG_PARSER])
+#define DBGP2 	if(Debug[DBG_PARSER] > 1)
+#define DBGP3 	if(Debug[DBG_PARSER] > 2)
+#define DBGS2   if(Debug[DBG_STREAM] == 2)
+#define DBGC1   if((Debug[DBG_CHU]&1) == 1)
+#define DBGC2   if((Debug[DBG_CHU]&2) == 2)
+#define DBGC4   if((Debug[DBG_CHU]&4) == 4)
+#define DBGC8   if((Debug[DBG_CHU]&8) == 8)
+#define DBGC32  if((Debug[DBG_CHU]&32) == 32)
+
+#define DBG if(0)
+#define DBG2 if(0)
+
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdio.h>
+#include <signal.h>
+
+static int max_delay       = 100000;
+static int log_debug       = 0;
+static int use_pts         = 1;
+static int force_reorder   = -1;
+static int force_vpid      = 0;
+static int force_apid      = 0;
+
+DECLARE_DEBUG_PARAM ("ffmd",  max_delay );
+DECLARE_DEBUG_PARAM ("fflog", log_debug );
+DECLARE_DEBUG_TOGGLE("ffpts", use_pts );
+DECLARE_DEBUG_TOGGLE("ffreo", force_reorder );
+DECLARE_DEBUG_PARAM("ffvp",  force_vpid );
+DECLARE_DEBUG_PARAM("ffap",  force_apid );
+
+static int http_header_is_safe( const char *key, const char *value )
+{
+	const unsigned char *p;
+	if( !key || !key[0] || !value )
+		return 0;
+	for( p = (const unsigned char *)key; *p; p++ ) {
+		if( *p <= 32 || *p >= 127 || *p == ':' )
+			return 0;
+	}
+	return !strchr( value, '\r' ) && !strchr( value, '\n' );
+}
+
+static void ffmpeg_set_http_options( AVDictionary **options, const STREAM_URL *src )
+{
+	const char *user_agent = "Mozilla/5.0 (Linux; Android) Nova/1.0";
+	const char *referer = NULL;
+	char *headers = NULL;
+	size_t headers_size = 1;
+	int i;
+
+	if( src && src->extra_list ) {
+		for( i = 0; src->extra_list[i] && src->extra_list[i + 1]; i += 2 ) {
+			const char *key = src->extra_list[i];
+			const char *value = src->extra_list[i + 1];
+			if( !http_header_is_safe( key, value ) || !strcasecmp( key, "extra_name" ) )
+				continue;
+			if( !strcasecmp( key, "User-Agent" ) )
+				user_agent = value;
+			else if( !strcasecmp( key, "Referer" ) )
+				referer = value;
+			else
+				headers_size += strlen( key ) + 2 + strlen( value ) + 2;
+		}
+		if( headers_size > 1 ) {
+			size_t offset = 0;
+			headers = (char *)amalloc( headers_size );
+			if( headers ) {
+				for( i = 0; src->extra_list[i] && src->extra_list[i + 1]; i += 2 ) {
+					const char *key = src->extra_list[i];
+					const char *value = src->extra_list[i + 1];
+					if( !http_header_is_safe( key, value ) || !strcasecmp( key, "extra_name" ) ||
+							!strcasecmp( key, "User-Agent" ) || !strcasecmp( key, "Referer" ) )
+						continue;
+					offset += snprintf( headers + offset, headers_size - offset,
+							"%s: %s\r\n", key, value );
+				}
+			}
+		}
+	}
+	// Bound stalled socket operations; stop/seek cancellation still interrupts sooner.
+	av_dict_set(options, "rw_timeout", "30000000", 0);
+	av_dict_set( options, "user_agent", user_agent, 0 );
+	if( referer )
+		av_dict_set( options, "referer", referer, 0 );
+	if( headers ) {
+		av_dict_set( options, "headers", headers, 0 );
+		afree( headers );
+	}
+}
+
+typedef struct PacketNode {
+	LinkedListNode s;
+	AVPacket packet;
+} PacketNode;
+
+typedef struct AVQueue {
+	LinkedList	list;
+	pthread_mutex_t mutex;
+	int		mem_used;
+	int 		packets;
+} AVQueue;
+
+typedef struct FD_INPUT {
+	int fd;
+	int64_t start, length, pos;
+	AVIOInterruptCB interrupt;
+} FD_INPUT;
+
+typedef struct FF_PRIV
+{
+	AVFormatContext *fmt;
+	AVIOContext *fd_io;
+	FD_INPUT *fd_input;
+        AVDictionary    *fmt_opts;
+	
+	AVQueue		aq;
+	AVQueue		vq;
+	AVQueue		sq;
+	AVQueue		sub_cache; // bounded packet history for all internal subtitle tracks
+	
+	STREAM		*s;
+	UINT64		size;
+	int size_known;
+	int		duration;
+	int		start_time;
+	
+	AV_PROPERTIES 	av;
+	AUDIO_PROPERTIES *audio;
+	VIDEO_PROPERTIES *video;
+	SUB_PROPERTIES 	*subtitle;
+	
+	ID3_TAG		tag;
+
+	int 		flags;
+	int		buffer_size;
+	int 		sleeping;
+	
+	int 		time_base_den;
+	int 		time_base_num;
+
+	int 		packet_count;
+	
+	int read_failed;
+	int drop_video_until_key;
+	int seeking;
+	int 		need_key;
+	int 		last_audio_time;
+
+	int		apid;
+	int		vpid;
+
+	STREAM_CHUNK	sc;
+	
+} FF_PRIV;
+
+
+// Custom AVIO keeps descriptor offsets relative to the supplied slice and
+// pread leaves the Java owner's shared file position untouched.
+static int fd_input_read(void *opaque, uint8_t *data, int size)
+{
+	FD_INPUT *in = opaque;
+	if (size <= 0) return AVERROR(EINVAL);
+	for (;;) {
+		if (in->interrupt.callback && in->interrupt.callback(in->interrupt.opaque)) return AVERROR_EXIT;
+		if (in->pos >= in->length) return AVERROR_EOF;
+		int bytes = (int)MIN((int64_t)size, in->length - in->pos);
+		ssize_t ret = pread64(in->fd, data, bytes, in->start + in->pos);
+		if (ret < 0 && errno == EINTR) continue;
+		if (ret < 0) return AVERROR(errno);
+		if (!ret) return AVERROR(EIO); // file truncated before the promised slice end
+		in->pos += ret;
+		return ret;
+	}
+}
+
+static int64_t fd_input_seek(void *opaque, int64_t offset, int whence)
+{
+	FD_INPUT *in = opaque;
+	if (whence == AVSEEK_SIZE) return in->length;
+	whence &= ~AVSEEK_FORCE;
+	int64_t base;
+	if (whence == SEEK_SET) base = 0;
+	else if (whence == SEEK_CUR) base = in->pos;
+	else if (whence == SEEK_END) base = in->length;
+	else return AVERROR(EINVAL);
+	if (offset < -base || offset > in->length - base) return AVERROR(EINVAL);
+	in->pos = base + offset;
+	return in->pos;
+}
+
+static void ffmpeg_close_fd_input(FF_PRIV *priv)
+{
+	if (priv->fd_io) {
+		av_freep(&priv->fd_io->buffer);
+		avio_context_free(&priv->fd_io);
+	}
+	if (priv->fd_input) {
+		close(priv->fd_input->fd);
+		afree(priv->fd_input);
+		priv->fd_input = NULL;
+	}
+}
+
+static int ffmpeg_open_input(FF_PRIV *priv, const char *url, AVDictionary **options)
+{
+	if (strncmp(url, "fd://", 5)) return avformat_open_input(&priv->fmt, url, NULL, options);
+	int fd;
+	int64_t offset, length;
+	if (stream_fd_parse_url(url, &fd, &offset, &length)) return AVERROR(EINVAL);
+	fd = stream_fd_duplicate(fd, offset, &length);
+	if (fd < 0) return AVERROR(errno);
+	priv->fd_input = acalloc(1, sizeof(*priv->fd_input));
+	if (!priv->fd_input) { close(fd); return AVERROR(ENOMEM); }
+	*priv->fd_input = (FD_INPUT){.fd = fd, .start = offset, .length = length,
+		.interrupt = priv->fmt->interrupt_callback};
+	unsigned char *buffer = av_malloc(32768);
+	if (!buffer) return AVERROR(ENOMEM);
+	priv->fd_io = avio_alloc_context(buffer, 32768, 0, priv->fd_input,
+		fd_input_read, NULL, fd_input_seek);
+	if (!priv->fd_io) { av_free(buffer); return AVERROR(ENOMEM); }
+	priv->fmt->pb = priv->fd_io;
+	priv->fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+	return avformat_open_input(&priv->fmt, NULL, NULL, options);
+}
+
+static int ff_force_seek = 1;
+
+DECLARE_DEBUG_PARAM( "fffs", ff_force_seek );
+
+static int _close( STREAM *s );
+static int _flush_packets( AVQueue *q, const char *tag );
+
+#define ff_p	((FF_PRIV*)s->parser_priv)
+
+static struct id_fmt_str {
+	int 	id;
+	int 	format;
+	UINT32 	fourcc;
+} id_fmt[] = 
+{
+	// Audio
+	{ AV_CODEC_ID_MP2,	WAVE_FORMAT_MPEG,		0	},
+	{ AV_CODEC_ID_MP3,	WAVE_FORMAT_MPEGLAYER3,		0	},
+	{ AV_CODEC_ID_WMAV2,	WAVE_FORMAT_MSAUDIO2,		0	},
+	{ AV_CODEC_ID_AAC,	WAVE_FORMAT_AAC,		0	},
+	{ AV_CODEC_ID_AAC_LATM,	WAVE_FORMAT_AAC_LATM,		0	},
+	{ AV_CODEC_ID_AC3,	WAVE_FORMAT_AC3,		0	},
+	{ AV_CODEC_ID_COOK,	WAVE_FORMAT_COOK,		0	},
+	{ AV_CODEC_ID_AMR_NB,	WAVE_FORMAT_VOICEAGE_AMR,	0	},
+	{ AV_CODEC_ID_AMR_WB,	WAVE_FORMAT_VOICEAGE_AMR_WB,	0	},
+	{ AV_CODEC_ID_FLAC,	WAVE_FORMAT_FLAC,		0	},
+	{ AV_CODEC_ID_VORBIS,	WAVE_FORMAT_OGG1,		0	},
+	{ AV_CODEC_ID_OPUS,	WAVE_FORMAT_OPUS,		0	},
+	{ AV_CODEC_ID_DTS,	WAVE_FORMAT_DTS,		0	},
+	{ AV_CODEC_ID_COOK,	WAVE_FORMAT_COOK,		0	},
+	{ AV_CODEC_ID_TRUEHD,	WAVE_FORMAT_TRUEHD,		0	},
+	{ AV_CODEC_ID_EAC3,	WAVE_FORMAT_EAC3,		0	},
+	{ AV_CODEC_ID_PCM_BLURAY, WAVE_FORMAT_PCM_BLURAY,	0	},
+		
+	// Video
+	{ AV_CODEC_ID_MPEG4,	VIDEO_FORMAT_MPG4,		VIDEO_FOURCC_DX50	},	
+	{ AV_CODEC_ID_MPEG2VIDEO,VIDEO_FORMAT_MPEG,		VIDEO_FOURCC_MPG2	},
+	{ AV_CODEC_ID_H264,	VIDEO_FORMAT_H264,		VIDEO_FOURCC_H264	},
+#ifdef CONFIG_FF_HEVC
+	{ AV_CODEC_ID_HEVC,	VIDEO_FORMAT_HEVC,		VIDEO_FOURCC_HEVC	},
+#endif
+	{ AV_CODEC_ID_WMV3,	VIDEO_FORMAT_WMV3,		VIDEO_FOURCC_WMV3	},
+	{ AV_CODEC_ID_VC1,	VIDEO_FORMAT_VC1,		VIDEO_FOURCC_WVC1	},
+	{ AV_CODEC_ID_MSMPEG4V3,VIDEO_FORMAT_MSMP43,		VIDEO_FOURCC_MP43	},
+	{ AV_CODEC_ID_MSMPEG4V2,VIDEO_FORMAT_MSMP42,		VIDEO_FOURCC_MP42	},
+	{ AV_CODEC_ID_MSMPEG4V1,VIDEO_FORMAT_MSMP41,		VIDEO_FOURCC_MP41	},
+	{ AV_CODEC_ID_MJPEG,	VIDEO_FORMAT_MJPG,		VIDEO_FOURCC_MJPG	},
+	{ AV_CODEC_ID_FLV1,	VIDEO_FORMAT_SPARK,		VIDEO_FOURCC_SPARK	},
+	{ AV_CODEC_ID_VP6F,	VIDEO_FORMAT_VP6,		VIDEO_FOURCC_VP6F	},
+	{ AV_CODEC_ID_H263,	VIDEO_FORMAT_H263,		VIDEO_FOURCC_H263	},
+	{ AV_CODEC_ID_RV10,	VIDEO_FORMAT_RV10,		VIDEO_FOURCC_RV10	},
+	{ AV_CODEC_ID_RV20,	VIDEO_FORMAT_RV20,		VIDEO_FOURCC_RV20	},
+	{ AV_CODEC_ID_RV30,	VIDEO_FORMAT_RV30,		VIDEO_FOURCC_RV30	},
+	{ AV_CODEC_ID_RV40,	VIDEO_FORMAT_RV40,		VIDEO_FOURCC_RV40	},
+	{ AV_CODEC_ID_THEORA,	VIDEO_FORMAT_THEORA,		VIDEO_FOURCC_THEO	},
+	{ AV_CODEC_ID_VP8,	VIDEO_FORMAT_VP8,		VIDEO_FOURCC_VP80	},
+	{ AV_CODEC_ID_VP9,	VIDEO_FORMAT_VP9,		VIDEO_FOURCC_VP90	},
+	{ AV_CODEC_ID_AV1,	VIDEO_FORMAT_AV1,		VIDEO_FOURCC_AV01	},
+
+	// Subtitle
+	{ AV_CODEC_ID_DVD_SUBTITLE,SUB_FORMAT_DVD_GFX,	0 },
+//	{ AV_CODEC_ID_DVB_SUBTITLE,SUB_FORMAT_DVBT,	0 },
+	{ AV_CODEC_ID_TEXT,	SUB_FORMAT_TEXT,	0 },
+	{ AV_CODEC_ID_BIN_DATA,	SUB_FORMAT_TEXT,	0 },
+	{ AV_CODEC_ID_SUBRIP,   SUB_FORMAT_TEXT,        0 },	
+	{ AV_CODEC_ID_XSUB,	SUB_FORMAT_XSUB,	0 },
+	{ AV_CODEC_ID_SSA,	SUB_FORMAT_SSA,		0 },
+	{ AV_CODEC_ID_ASS,	SUB_FORMAT_SSA,		0 },
+	{ AV_CODEC_ID_MOV_TEXT,	SUB_FORMAT_MOV_TEXT,	0 },
+	{ AV_CODEC_ID_HDMV_PGS_SUBTITLE, SUB_FORMAT_PGS,        0 },
+	{ AV_CODEC_ID_WEBVTT,	SUB_FORMAT_WEBVTT,	0 },
+};
+
+
+static const char *disposition_name( int disposition, int is_audio )
+{
+	if (disposition & AV_DISPOSITION_HEARING_IMPAIRED)
+		return "(hearing impaired)";
+	if (disposition & AV_DISPOSITION_VISUAL_IMPAIRED)
+		return is_audio ? "(audio description)" : "(visual impaired)";
+	if (disposition & AV_DISPOSITION_FORCED)
+		return "(forced)";
+	if (disposition & AV_DISPOSITION_ORIGINAL)
+		return "(original)";
+	if (disposition & AV_DISPOSITION_DUB)
+		return is_audio ? "(dubbed)" : "(translated)";
+	if (disposition & AV_DISPOSITION_CAPTIONS)
+		return "(captions)";
+	if (disposition & AV_DISPOSITION_DESCRIPTIONS)
+		return "(descriptions)";
+	if( disposition & AV_DISPOSITION_DEFAULT )
+		return "(default)";
+	if (disposition & AV_DISPOSITION_COMMENT)
+		return "(commentary)";
+	if (disposition & AV_DISPOSITION_LYRICS)
+		return "(lyrics)";
+	if (disposition & AV_DISPOSITION_KARAOKE)
+		return "(karaoke)";
+	if( disposition & AV_DISPOSITION_ATTACHED_PIC)
+		return "(attached pic)";
+	if (disposition & AV_DISPOSITION_CLEAN_EFFECTS)
+		return "(clean effects)";
+		
+	return "(none)";
+}
+ 
+void av_log_cb(void* ptr, int level, const char* fmt, va_list vl)
+{
+	if( log_debug && level > AV_LOG_DEBUG ) {
+		return;
+	} else if ( level > AV_LOG_ERROR ) {
+		return;
+	}
+	vserprintf( fmt, vl );
+}
+
+// ************************************************************
+//
+//	get_ff_format
+//
+// ************************************************************
+static int get_ff_format( int id, UINT32 *fourcc )
+{
+	int i;
+    serprintf("get_ff_format %d\n", id);
+	for( i = 0; i < sizeof( id_fmt ) / sizeof( struct id_fmt_str); i++ ) {
+		if( id_fmt[i].id == id ) {
+			if( fourcc ) {
+				*fourcc = id_fmt[i].fourcc;
+			}
+			return id_fmt[i].format;
+		}
+	} 
+	return 0;
+}
+
+// ************************************************************
+//
+//	_parse_format
+//
+// ************************************************************
+// REMARK: cannot use scaling by audio speed there because task is performed once
+static int _parse_format( int etype, FF_PRIV *priv ) 
+{
+	AVFormatContext *fmt = priv->fmt;
+
+DBGP serprintf("format   [%s]\r\n", fmt->iformat->name );
+
+	if( fmt->pb ) {
+		int64_t size = avio_size(fmt->pb);
+		priv->size_known = size >= 0;
+		priv->size = size >= 0 ? (uint64_t)size : 0;
+DBGP serprintf("size     %lld\r\n", priv->size );
+	}
+	if( fmt->duration != AV_NOPTS_VALUE && etype != ETYPE_MPEG_TS ) {
+		priv->duration = 1000 * (INT64)fmt->duration / AV_TIME_BASE; // rst domain
+		DBGP serprintf( "duration %d\r\n", priv->duration );
+	} else {
+		if( priv->s )
+			priv->s->no_duration = 1;
+DBGP serprintf("duration ---\r\n" );
+	}
+
+	if (fmt->start_time != AV_NOPTS_VALUE) {
+DBGP serprintf("FFMPEG start    %lld\r\n",  fmt->start_time);
+		priv->start_time = 1000 * (INT64)fmt->start_time / AV_TIME_BASE; // rst domain
+DBGP serprintf( "start    %d\r\n", priv->start_time );
+	}
+DBGP serprintf("bitrate  %d\r\n", fmt->bit_rate);
+
+	int i;
+	for(i = 0; i < fmt->nb_streams; i++) {
+		AVStream *st          = fmt->streams[i];
+		AVCodecParameters *codecpar = st->codecpar;
+		int discard = 1;
+
+		// For thumbnails: skip non-video streams early to save CPU
+		if ((priv->flags & STREAM_PARSER_THUMB) &&
+		    st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) {
+			continue;
+		}
+
+DBGP serprintf("Stream #%d: ", i);
+		if(st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO){
+DBGP serprintf("VIDEO\r\n");
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ){
+DBGP serprintf("AUDIO\r\n");
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ){
+DBGP serprintf("SUBTITLE\r\n");
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT ){
+DBGP serprintf("ATTACHEMENT\r\n");
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_DATA ){
+DBGP serprintf("DATA\r\n");
+		} else {
+DBGP serprintf("<unknown> type %d\r\n", st->codecpar->codec_type);
+		}
+		int flags = fmt->iformat->flags;
+		if (flags & AVFMT_SHOW_IDS) {
+DBGP serprintf("\tPID        0x%x\r\n", st->id);
+		}
+		AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
+		if (lang) {
+DBGP serprintf("\tlanguage   %s -> %s\r\n", lang->value, map_ISO639_code( lang->value ) );
+		}
+		AVDictionaryEntry *title = av_dict_get(st->metadata, "title", NULL, 0);
+		if (title) {
+DBGP serprintf("\ttitle   %s\r\n", title->value);
+		}
+		int gcd = av_gcd(st->time_base.num, st->time_base.den);
+DBGP serprintf("\tnum/dem    %d/%d\r\n", st->time_base.num/gcd, st->time_base.den/gcd);
+DBGP serprintf("\tcodec_id   %X\r\n", codecpar->codec_id);
+		const AVCodecDescriptor *desc = avcodec_descriptor_get(codecpar->codec_id);
+DBGP serprintf("\tcodec_name %s\r\n", desc ? desc->name : "");
+DBGP serprintf("\tcodec_long_name %s\r\n", desc ? desc->long_name : "");
+		if( codecpar->extradata_size ) {
+DBGP serprintf("\textra      "); 
+DBGP DumpLine( codecpar->extradata, MIN(128,codecpar->extradata_size), MIN(128,codecpar->extradata_size) );
+		}
+DBGP serprintf("\tbitrate    %d\r\n", codecpar->bit_rate);
+DBGP serprintf("\tdisposition %d / %s\r\n", st->disposition, disposition_name(st->disposition, st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO));
+		
+		if(st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO){
+			//
+			// video
+			//
+			if( st->disposition & AV_DISPOSITION_ATTACHED_PIC ) {
+				goto DISCARD_STREAM;
+			}
+			if(st->avg_frame_rate.den && st->avg_frame_rate.num) {
+DBGP serprintf("\tfps        %5.2f fps(r)\r\n", av_q2d(st->avg_frame_rate));
+			}
+			AVRational sample_aspect_ratio = av_guess_sample_aspect_ratio(fmt, st, NULL);
+DBGP serprintf("\tPAR        %d/%d (stream %d/%d, codec %d/%d)\r\n",
+			sample_aspect_ratio.num, sample_aspect_ratio.den,
+			st->sample_aspect_ratio.num, st->sample_aspect_ratio.den,
+			codecpar->sample_aspect_ratio.num, codecpar->sample_aspect_ratio.den );
+			if ( priv->av.vs_max < VIDEO_TRACK_MAX ) {
+				VIDEO_PROPERTIES *video = priv->av.video + priv->av.vs_max;
+				
+				video->stream = i;
+                if (st->avg_frame_rate.den && st->r_frame_rate.den && av_q2d(st->avg_frame_rate) == av_q2d(st->r_frame_rate)) {
+                    video->frame_rate_den = st->r_frame_rate.den;
+                    video->frame_rate_num = st->r_frame_rate.num;
+                }
+
+				if(st->avg_frame_rate.den && st->avg_frame_rate.num) {
+					video->rate  = st->avg_frame_rate.num;
+					video->scale = st->avg_frame_rate.den;
+DBGP serprintf( "vrate=%d; vscale=%d\n", video->rate, video->scale );
+				} else {
+					//video->scale  = st->time_base.num;
+					//video->rate   = st->time_base.den;
+serprintf( "untouched (!?) vrate=%d; vscale=%d\n", video->rate, video->scale );
+				}
+
+				priv->time_base_num = st->time_base.num/gcd;
+				priv->time_base_den = st->time_base.den/gcd;
+				video->frames = 0;
+				video->valid  = 1;
+				
+				//if( priv->av.vs_max == 0 && video->rate )
+				//	priv->duration = (UINT32)( 1000ull * (UINT64)video->frames * (UINT64) video->scale / (UINT64) video->rate);
+
+				video->codec_id	   = codecpar->codec_id;
+				strnZcpy( video->codec_name, desc ? desc->name : "", AV_NAME_LEN );
+				
+				video->fourcc      = codecpar->codec_tag;
+				video->format      = get_ff_format( codecpar->codec_id, &video->fourcc  );
+				if( video->format == 0 && video->codec_id ) {
+					video->format = VIDEO_FORMAT_LAVC;
+					video->fourcc = VIDEO_FOURCC_LAVC;
+				}
+				
+				if( codecpar->extradata_size ) {
+					// libavformat used to skip the first 4 bytes in av1 private data but not anymore
+					// for AV1 both sfdec android hw codecs and dav1d do not want this thus skip it
+					int offset = ( video->format == VIDEO_FORMAT_AV1 ) ? 4 : 0;
+					if (!codecpar->extradata || codecpar->extradata_size < offset) {
+						serprintf("FFMPEG: invalid codec extradata size %d\n", codecpar->extradata_size);
+						return 1;
+					}
+					if( codecpar->extradata_size <= sizeof( video->extraData ) ) {
+						// Add debug output to investigate the extradata
+						DBGP {
+							serprintf( "AV1 extraData[%d]=[", codecpar->extradata_size );
+							if( codecpar->extradata_size >= 8 ) {
+								serprintf( "4 first bytes: " );
+								for( int i = 0; i < 4; i++ ) {
+									serprintf( "%02X,", codecpar->extradata[i] );
+								}
+								serprintf( "]\n" );
+							}
+						}
+						video->extraDataSize = codecpar->extradata_size - offset ;
+						memcpy( video->extraData, codecpar->extradata + offset , video->extraDataSize );
+						if( video->format == VIDEO_FORMAT_H264 && video->extraData[0] == 0x00 ) {
+serprintf("FF: parse H264 SPS\n");
+							// for non-AVCC H264, parse the SPS/PPS here
+							H264_get_video_props( video, video->extraData, video->extraDataSize, &video->sps );
+						}
+					} else {
+						video->extraDataSize  = 0;
+						video->extraDataSize2 = codecpar->extradata_size - offset;
+						video->extraData2     = codecpar->extradata + offset;
+					}
+				} 
+				
+				video->width       = codecpar->width;
+				video->height      = codecpar->height;
+				video->aspect_n    = sample_aspect_ratio.num;
+				video->aspect_d	   = sample_aspect_ratio.den;
+				video->aspect_from_container = st->sample_aspect_ratio.num > 0 &&
+						st->sample_aspect_ratio.den > 0;
+				video->bytesPerSec = codecpar->bit_rate / 8;
+				video->reorder_depth = codecpar->video_delay;
+
+				video->color_primaries = codecpar->color_primaries;
+				video->color_trc       = codecpar->color_trc;
+				video->color_space     = codecpar->color_space;
+				video->color_range     = codecpar->color_range;
+
+				switch( video->format ) {
+				case VIDEO_FORMAT_MPEG:
+					video->reorder_pts   = 0;
+					video->extraDataSize = 0;
+					break;
+				default:
+					video->reorder_pts = 1;
+					break;
+				}
+				if( !strcmp("avi", fmt->iformat->name ) ) {
+					video->reorder_pts = 0;
+				}
+				if( force_reorder != -1 ) {
+					video->reorder_pts = force_reorder;
+				}
+				
+				priv->av.vs_max ++;
+				discard = 0;
+
+                        int side_data_size = 0;
+                        uint8_t* side_data = NULL;
+
+                        // FFmpeg 8+ replacement for deprecated av_stream_get_side_data
+                        for (int j = 0; j < codecpar->nb_coded_side_data; j++) {
+                            if (codecpar->coded_side_data[j].type == AV_PKT_DATA_DOVI_CONF) {
+                                side_data = codecpar->coded_side_data[j].data;
+                                side_data_size = codecpar->coded_side_data[j].size;
+                                break;
+                            }
+                        }
+                        int dovi_codec_supported = 1;
+                        int dovi_mode = 0;
+#ifdef CONFIG_ANDROID
+                        dovi_codec_supported = acodecs_is_type_supported("video/dolby-vision", 0);
+                        dovi_mode = acodecs_get_dovi_mode();
+#endif
+                        if(side_data && side_data_size > 0 && dovi_codec_supported) {
+                            AVDOVIDecoderConfigurationRecord *dovi_record = (AVDOVIDecoderConfigurationRecord*)side_data;
+                            int force_dovi = 0;
+                            int prefer_hevc_fallback = 0;
+                            char *dovi_decoder = NULL;
+                            video->dv_bl_signal_compatibility_id = dovi_record->dv_bl_signal_compatibility_id;
+                            serprintf("Dolby Vision config: codec=%d dv_profile=%d dv_level=%d bl_compat_id=%d rpu=%d el=%d bl=%d codec_supported=%d\r\n",
+                                      video->format,
+                                      dovi_record->dv_profile,
+                                      dovi_record->dv_level,
+                                      dovi_record->dv_bl_signal_compatibility_id,
+                                      dovi_record->rpu_present_flag,
+                                      dovi_record->el_present_flag,
+                                      dovi_record->bl_present_flag,
+                                      dovi_codec_supported);
+                            if (video->format == VIDEO_FORMAT_HEVC) {
+                                switch(dovi_record->dv_profile) {
+                                    // Mapping source: Kodi's DVDVideoCodecAndroidMediaCodec.cpp
+                                    case 4:
+                                        video->dv_profile = 16; //DolbyVisionProfileDvheDtr
+                                        break;
+                                    case 5:
+                                        video->dv_profile = 32; //DolbyVisionProfileDvheStn 
+                                        break;
+                                    case 7:
+                                        video->dv_profile = 256; //DolbyVisionProfileDvheSt
+                                        break;
+                                    case 8:
+                                        video->dv_profile = 256; //DolbyVisionProfileDvheSt, should be Dtb but Kodi says to use St
+                                        break;
+                                    case 9:
+                                        video->dv_profile = 512; //DolbyVisionProfileDvavSe
+                                        break;
+                                    default:
+                                        serprintf("Unsupported Dolby HEVC profile %d", dovi_record->dv_profile);
+                                        break;
+                                }
+                            } else if (video->format == VIDEO_FORMAT_AV1) {
+                                if (dovi_record->dv_profile == 10) {
+                                    video->dv_profile = 0x400;//DolbyVisionProfileDvav110 
+                                } else {
+                                    serprintf("Unsupported Dolby AV1 profile %d", dovi_record->dv_profile);
+                                }
+                            } else {
+                                serprintf("Dolby Vision in an unknown codec %d", video->format);
+                            }
+
+                            if (video->dv_profile) {
+#ifdef CONFIG_ANDROID
+                                dovi_decoder = (char*) acodecs_get_for_profile("video/dolby-vision", video->dv_profile);
+#endif
+                                force_dovi = (dovi_decoder != NULL);
+                            }
+
+                            if (dovi_mode == 2 && dovi_codec_supported) {
+                                force_dovi = 1;
+                            }
+
+                            if (video->format == VIDEO_FORMAT_HEVC &&
+                                dovi_record->dv_profile == 7 &&
+                                dovi_mode != 2 &&
+                                dovi_record->dv_bl_signal_compatibility_id != 0 &&
+                                dovi_record->dv_bl_signal_compatibility_id != 2 &&
+                                dovi_record->dv_bl_signal_compatibility_id != 3) {
+                                prefer_hevc_fallback = 1;
+                                force_dovi = 0;
+                            }
+
+                            if (force_dovi) {
+                                video->fourcc = VIDEO_FOURCC_DOLBY_VISION;
+                                video->format = VIDEO_FORMAT_DOLBY_VISION;
+                            }
+
+                            serprintf("Dolby Vision selection: final_format=%d final_dv_profile=%d fourcc=%d decoder_match=%s prefer_hevc_fallback=%d bl_compat_id=%d dovi_mode=%d\r\n",
+                                      video->format,
+                                      video->dv_profile,
+                                      video->fourcc,
+                                      dovi_decoder ? dovi_decoder : "(none)",
+                                      prefer_hevc_fallback,
+                                      video->dv_bl_signal_compatibility_id,
+                                      dovi_mode);
+                            if (!force_dovi) {
+                                serprintf("Dolby Vision fallback: keeping base codec=%d because %s (profile=%d bl_compat_id=%d)\r\n",
+                                          video->format,
+                                          prefer_hevc_fallback ? "HDR-compatible base layer is preferred" : "no usable Dolby Vision decoder matched",
+                                          video->dv_profile,
+                                          video->dv_bl_signal_compatibility_id);
+                            }
+
+                            if (dovi_decoder)
+                                afree(dovi_decoder);
+                        } else if (side_data && side_data_size > 0) {
+                            AVDOVIDecoderConfigurationRecord *dovi_record = (AVDOVIDecoderConfigurationRecord*)side_data;
+                            serprintf("Dolby Vision config ignored: codec=%d dv_profile=%d bl_compat_id=%d codec_supported=%d\r\n",
+                                      video->format,
+                                      dovi_record->dv_profile,
+                                      dovi_record->dv_bl_signal_compatibility_id,
+                                      dovi_codec_supported);
+                        }
+			}
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ){
+			//
+			// audio
+			//
+DBGP serprintf("\tsampleRate %d\r\n", codecpar->sample_rate);
+DBGP serprintf("\tblockAlign %d\r\n", codecpar->block_align);
+DBGP serprintf("\tchannels   %d\r\n", codecpar->ch_layout.nb_channels);
+
+			if(st->avg_frame_rate.den && st->avg_frame_rate.num) {
+DBGP serprintf("\tfps        %5.2f fps(r)\r\n", av_q2d(st->avg_frame_rate));
+			}
+
+			if ( priv->av.as_max < AUDIO_TRACK_MAX ) {
+				AUDIO_PROPERTIES *audio = priv->av.audio + priv->av.as_max;
+
+				audio->codec_id	     = codecpar->codec_id;
+				strnZcpy( audio->codec_name, desc ? desc->name : "", AV_NAME_LEN );
+				audio->format        = get_ff_format( codecpar->codec_id, NULL );
+#ifdef CONFIG_DTS
+				if( audio->format == WAVE_FORMAT_DTS && codecpar->profile > 0 ) {
+					int dts_format = DTS_get_format_from_profile( codecpar->profile );
+					if( dts_format != WAVE_FORMAT_DTS ) {
+						audio->format = dts_format;
+						DBG serprintf("stream_parser_ffmpeg: detected DTS profile=%d -> format=%04X\n",
+							codecpar->profile, audio->format);
+					}
+				}
+#endif
+				if( audio->format == WAVE_FORMAT_EAC3 &&
+				    codecpar->profile == AV_PROFILE_EAC3_DDP_ATMOS ) {
+					audio->format = WAVE_FORMAT_E_AC3_JOC;
+					DBG serprintf("stream_parser_ffmpeg: detected EAC3 Atmos (profile=%d)\n",
+						codecpar->profile);
+				}
+
+				if( audio->format == 0 && audio->codec_id ) {
+					audio->format = WAVE_FORMAT_LAVC;
+				}
+
+				audio->stream        = i;
+				audio->scale         = st->time_base.num/gcd;
+				audio->rate          = st->time_base.den/gcd;
+DBGP serprintf( "arate=%d; ascale=%d\n", audio->rate, audio->scale );
+				audio->frames        = 0;
+				audio->channels      = codecpar->ch_layout.nb_channels;
+				audio->samplesPerSec = codecpar->sample_rate;
+				audio->bitsPerSample = 0;
+				audio->blockAlign    = codecpar->block_align;
+				audio->bytesPerSec   = codecpar->bit_rate / 8;
+				audio->valid         = 1;
+				//stream_set_audio_name( audio, priv->av.as_max + 1 );
+
+				if (title) {
+					int n = snprintf(audio->name, AV_NAME_LEN, "%s", title->value);
+					if (n >= AV_NAME_LEN) audio->name[AV_NAME_LEN - 1] = '\0';
+				}
+
+				if (lang) {
+					strnZcpy( audio->lang, lang->value, AV_NAME_LEN );
+				}
+
+				audio->disposition = st->disposition;
+
+				if (st->disposition && st->disposition != AV_DISPOSITION_DEFAULT) {
+					if (st->disposition & (AV_DISPOSITION_HEARING_IMPAIRED | AV_DISPOSITION_VISUAL_IMPAIRED)) {
+						audio->priority = 2;
+					}
+				}
+				
+				if ( audio->format == WAVE_FORMAT_IMA ) {
+					audio->samplesPerBlock = 0;
+				}
+
+				if( codecpar->extradata_size ) {
+					if( codecpar->extradata_size <= sizeof( audio->extraData ) ) {
+						audio->extraDataSize = codecpar->extradata_size;
+						memcpy( audio->extraData, codecpar->extradata, audio->extraDataSize  );	
+					} else {
+						audio->extraDataSize  = 0;
+						audio->extraDataSize2 = codecpar->extradata_size;
+						audio->extraData2     = codecpar->extradata;
+					}
+				} 
+				
+				// hack for stupid canon cameras!
+				if ( audio->samplesPerSec == 11024 )
+					audio->samplesPerSec ++;
+				
+				//_check_VBR( audio );
+				
+				priv->av.as_max ++;
+				discard = 0;
+			} else {
+				serprintf("stream_parser_ffmpeg: ignoring audio stream %d: "
+					"maximum of %d audio tracks reached\n",
+					i, AUDIO_TRACK_MAX);
+			}
+		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE || st->codecpar->codec_type == AVMEDIA_TYPE_DATA ){
+			//
+			// subtitle
+			//
+			int fmt = get_ff_format( codecpar->codec_id, NULL );
+			if( fmt && priv->av.subs_max < SUB_TRACK_MAX ) {
+				SUB_PROPERTIES *sub = priv->av.sub + priv->av.subs_max;
+	
+				sub->valid          = 1;
+				sub->codec_id	    = codecpar->codec_id;
+				strnZcpy( sub->codec_name, desc ? desc->name : "", AV_NAME_LEN );
+				serprintf("sub->codec_name %s\n", sub->codec_name);
+				sub->format         = fmt;
+				sub->gfx            = (sub->format == SUB_FORMAT_DVD_GFX || sub->format == SUB_FORMAT_PGS) ? 1 : 0;
+				sub->stream         = i;
+				sub->scale          = st->time_base.num;
+				sub->rate           = st->time_base.den;
+
+DBGP serprintf("srate=%d; sscale=%d\n", sub->rate, sub->scale);
+				sub->extraData2     = codecpar->extradata;
+				sub->extraDataSize2 = codecpar->extradata_size;
+
+				if (title) {
+					int n = snprintf(sub->name, AV_NAME_LEN, "%s", title->value);
+					if (n >= AV_NAME_LEN) sub->name[AV_NAME_LEN - 1] = '\0';
+				}
+
+				if (lang) {
+					strnZcpy( sub->lang, lang->value, AV_NAME_LEN );
+				}
+
+				sub->disposition = st->disposition;
+
+				if (st->disposition && st->disposition != AV_DISPOSITION_DEFAULT) {
+					if (st->disposition & (AV_DISPOSITION_HEARING_IMPAIRED | AV_DISPOSITION_VISUAL_IMPAIRED)) {
+						sub->priority = 2;
+					}
+				}
+
+				priv->av.subs_max ++;
+				discard = 0;
+			} else if( fmt ) {
+				serprintf("stream_parser_ffmpeg: ignoring subtitle stream %d: "
+					"maximum of %d subtitle tracks reached\n",
+					i, SUB_TRACK_MAX);
+			}
+		}
+DISCARD_STREAM:
+		if( discard ) {
+DBGP serprintf("\tDISCARD!\n" );
+			st->discard = AVDISCARD_ALL;
+		}		
+DBGP serprintf("\r\n");
+	}
+
+	if( fmt->nb_chapters ) {
+DBGP serprintf("chapters:\r\n");	
+		for( i =0; i < fmt->nb_chapters; i++ ) {
+			// chapters stays in rst domain
+			AVChapter *ch = fmt->chapters[i];
+			UINT64 start = 1000 * ch->start * ch->time_base.num / ch->time_base.den; 
+			UINT64 end   = 1000 * ch->end   * ch->time_base.num / ch->time_base.den; 
+			AVDictionaryEntry *t = av_dict_get( ch->metadata, "title", NULL, 0 );
+			DBGP serprintf( "[%2d] id %08X  start/end %8lld/%8lld  [%s]\r\n", i, ch->id, start, end,
+							t ? t->value : "(no title)" );
+			if( priv->s ) {
+				stream_add_chapter( priv->s, start, end, t ? t->value : "s_unknown" );
+			}
+		}
+DBGP serprintf("\r\n");
+	}
+
+	return 0;
+}
+
+static int ffmpeg_interrupt_cb(void *ctx)
+{
+	STREAM *s = (STREAM*)ctx;
+	return s && (s->parser_interrupt || stream_abort( s )) ? 1 : 0;
+}
+
+static void parse_PID_from_query( STREAM *s )
+{
+	int pid;
+	char *vid = strstr( s->src_query, "vid=" );
+	if( vid && sscanf( vid, "vid=%d", &pid ) == 1 ) {
+		ff_p->vpid = pid;
+DBGP serprintf("video PID    %4d\n", ff_p->vpid);
+	}
+	
+	char *aud = strstr( s->src_query, "aud=" );
+	if( aud && sscanf( aud, "aud=%d", &pid ) == 1 ) {
+		ff_p->apid = pid;
+DBGP serprintf("audio PID    %4d\n", ff_p->apid);
+	}
+}
+
+// ************************************************************
+//
+//	_open
+//
+// ************************************************************
+static int _open( STREAM *s, int buffer_size, int flags )
+{
+DBGS serprintf("FFMPEG: open: %s, buffer_size: %d\r\n", s->src.url, buffer_size);
+
+	// allocate private data
+	if( !(s->parser_priv = (FF_PRIV*)amalloc( sizeof( FF_PRIV ) ) ) ) {
+		goto ErrorExit;
+	}
+	
+	memset( ff_p, 0, sizeof( FF_PRIV ) );
+	av_init_props( ff_p );
+	ff_p->s = s;
+	
+	ff_p->flags = flags;
+	
+	stream_parser_clear_chunks( s );
+
+	ff_p->buffer_size = MIN(MAX(buffer_size, 1024 * 1024), INT_MAX / 2);
+
+	av_log_set_callback(av_log_cb);
+	if( log_debug ) {
+		av_log_set_level( AV_LOG_DEBUG );
+ 	}
+	
+	if (avformat_network_init() != 0) {
+serprintf("FFMPEG: cannot init network");
+		goto ErrorExit2;
+    	}
+	
+	ff_p->fmt = avformat_alloc_context();
+	if (!ff_p->fmt) goto ErrorExit4;
+
+	// set max_delay here, we need that for proper RTSP, all other demuxers ignore it ...
+	ff_p->fmt->max_delay = max_delay;
+DBGP serprintf("max_delay: %d\n", ff_p->fmt->max_delay);
+	
+	ff_p->fmt->interrupt_callback.callback = ffmpeg_interrupt_cb;
+	ff_p->fmt->interrupt_callback.opaque   = s;
+
+	if( strstr( s->src_query, "?mpegts&" ) ) {
+		parse_PID_from_query( s );
+	}
+	
+	if( force_vpid ) {
+		ff_p->vpid = force_vpid;
+	}
+	if( force_apid ) {
+		ff_p->apid = force_apid;
+	}
+		
+	if( ff_p->vpid || ff_p->apid ) {
+		char buf[32];
+		av_dict_set(&ff_p->fmt_opts, "no_pat", "1", 0);
+        	
+		if( ff_p->vpid ) {
+			snprintf(buf, sizeof(buf), "%d", ff_p->vpid);
+			av_dict_set(&ff_p->fmt_opts, "vpid", buf, 0);
+		}
+		if( ff_p->apid ) {
+			snprintf(buf, sizeof(buf), "%d", ff_p->apid);
+			av_dict_set(&ff_p->fmt_opts, "apid", buf, 0);
+			if(!ff_p->vpid) {
+				// audio only, lower score for MP3
+				char buf[10] = "50";
+				av_dict_set(&ff_p->fmt_opts, "probe_extra", buf, 0);
+			}
+		}
+		ff_p->fmt->flags |= AVFMT_FLAG_NOFILLIN;
+	}
+
+	// For thumbnails: use minimal probing to speed up processing
+	if (ff_p->flags & STREAM_PARSER_THUMB) {
+		av_dict_set(&ff_p->fmt_opts, "probesize", "500000", 0);      // 500KB instead of 10MB
+		av_dict_set(&ff_p->fmt_opts, "analyzeduration", "1000000", 0);  // 1 second max
+	} else {
+		av_dict_set(&ff_p->fmt_opts, "probesize", "10000000", 0);
+	}
+
+	ffmpeg_set_http_options(&ff_p->fmt_opts, &s->src);
+DBGP serprintf("FFMPEG: opening url [%s]\r\n", s->src.url);
+
+	if( ffmpeg_open_input(ff_p, s->src.url, &ff_p->fmt_opts) != 0) {
+serprintf("FFMPEG: cannot open file [%s]\r\n", s->src.url);
+		goto ErrorExit4;
+	}
+
+DBGP serprintf("info\r\n");
+
+	// Retrieve stream information
+	if (ff_p->flags & STREAM_PARSER_THUMB) {
+		// For thumbnails: only analyze video stream, skip audio/subs for speed
+		int nb_streams = ff_p->fmt->nb_streams;
+		AVDictionary **opts = (AVDictionary **)acalloc(nb_streams, sizeof(AVDictionary *));
+		if (opts) {
+			for (int i = 0; i < nb_streams; i++) {
+				if (ff_p->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+					// Analyze video stream with minimal time
+					av_dict_set(&opts[i], "analyzeduration", "1000000", 0);  // 1 second max
+				} else {
+					// Skip audio/subtitle analysis completely
+					av_dict_set(&opts[i], "analyzeduration", "0", 0);
+					ff_p->fmt->streams[i]->discard = AVDISCARD_ALL;
+				}
+			}
+		}
+		if (avformat_find_stream_info(ff_p->fmt, opts) < 0) {
+			printf("FFMPEG: cannot find stream info\r\n");
+		}
+		// Clean up
+		if (opts) {
+			for (int i = 0; i < nb_streams; i++) {
+				av_dict_free(&opts[i]);
+			}
+			afree(opts);
+		}
+	} else {
+		// Normal mode: analyze all streams
+		if (avformat_find_stream_info(ff_p->fmt, NULL) < 0) {
+			printf("FFMPEG: cannot find stream info\r\n");
+		}
+	}
+
+	if (_parse_format(s->etype, ff_p)) goto ErrorExit4;
+
+	memcpy( &s->av, &ff_p->av, sizeof( AV_PROPERTIES ) );
+
+	s->duration = ff_p->duration;
+	s->size     = ff_p->size;
+	
+	LinkedList_init( &ff_p->aq.list );
+	LinkedList_init( &ff_p->vq.list );
+	LinkedList_init( &ff_p->sq.list );
+	LinkedList_init( &ff_p->sub_cache.list );
+
+	pthread_mutex_init( &ff_p->aq.mutex, NULL );
+	pthread_mutex_init( &ff_p->vq.mutex, NULL );
+	pthread_mutex_init( &ff_p->sq.mutex, NULL );
+	pthread_mutex_init( &ff_p->sub_cache.mutex, NULL );
+
+	// make lavf parser use this sync mode! 0 is for STREAM_SYNC_CDATA (PTS) and 1 for STREAM_SYNC_SAMPLES
+	//s->sync_mode = STREAM_SYNC_SAMPLES;
+	//s->sync_mode = STREAM_SYNC_CDATA; // current default one
+	s->sync_mode = stream_parser_get_sync_mode();
+	
+	// Force sample-based sync for FLAC audio tracks to avoid sync issues
+	if (s->audio->valid && s->audio->format == WAVE_FORMAT_FLAC) {
+		s->sync_mode = STREAM_SYNC_SAMPLES;
+	}
+
+	s->parser_open = 1;
+
+	if( s->video->valid ) {
+		ff_p->need_key = 1;
+	}
+	return 0;
+
+ErrorExit4:
+ErrorExit3:
+	if (ff_p->fmt) avformat_close_input(&ff_p->fmt);
+	ffmpeg_close_fd_input(ff_p);
+	av_dict_free(&ff_p->fmt_opts);
+	avformat_network_deinit();
+
+ErrorExit2:
+ErrorExit:
+	afree( ff_p );
+	s->parser_priv = NULL;
+	
+	return 1;
+}
+
+// ************************************************************
+//
+//	_close
+//
+// ************************************************************
+static int _close( STREAM *s )
+{
+DBGS serprintf("FFMPEG: close\r\n");
+	if( !s->parser_open ) {
+serprintf("FFMPEG: not open!\r\n" );
+		return 1;
+	} 
+	s->parser_open = 0;
+	if( ff_p ) {
+		if( ff_p->fmt ) {
+			// Close the video file
+			avformat_close_input(&ff_p->fmt);
+		}
+
+
+		ffmpeg_close_fd_input(ff_p);
+
+		_flush_packets( &ff_p->vq, "VID" );
+		_flush_packets( &ff_p->aq, "AUD" );
+		_flush_packets( &ff_p->sq, "SUB" );
+		_flush_packets( &ff_p->sub_cache, "SUB_CACHE" );
+
+		pthread_mutex_destroy(&ff_p->aq.mutex);
+		pthread_mutex_destroy(&ff_p->vq.mutex);
+		pthread_mutex_destroy(&ff_p->sq.mutex);
+		pthread_mutex_destroy(&ff_p->sub_cache.mutex);
+
+		av_dict_free(&ff_p->fmt_opts);
+
+		afree( ff_p );
+		s->parser_priv = NULL;
+	}
+	avformat_network_deinit();
+	return 0;
+}
+
+// ************************************************************
+//
+//	_dispose_packet
+//
+// ************************************************************
+static void _dispose_packet( AVPacket *packet )
+{
+	av_packet_unref( packet );
+}
+
+// ************************************************************
+//
+//	_add_packet
+//
+// ************************************************************
+#define FF_QUEUE_MAX_PACKETS 8192
+
+static int64_t packet_cost(const AVPacket *packet)
+{
+	if (packet->size < 0) return INT64_MAX;
+	int64_t cost = sizeof(PacketNode) + (int64_t)packet->size;
+	if (cost > INT_MAX) return INT64_MAX;
+	for (int i = 0; i < packet->side_data_elems; ++i) {
+		if (packet->side_data[i].size > INT_MAX - cost) return INT64_MAX;
+		cost += packet->side_data[i].size + sizeof(AVPacketSideData);
+		if (cost > INT_MAX) return INT64_MAX;
+	}
+	return cost;
+}
+
+static int queue_bytes(AVQueue *q)
+{
+	pthread_mutex_lock(&q->mutex);
+	int bytes = q->mem_used;
+	pthread_mutex_unlock(&q->mutex);
+	return bytes;
+}
+
+static int queue_packets(AVQueue *q)
+{
+	pthread_mutex_lock(&q->mutex);
+	int packets = q->packets;
+	pthread_mutex_unlock(&q->mutex);
+	return packets;
+}
+
+static int _add_packet( AVQueue *q, AVPacket *packet )
+{
+	pthread_mutex_lock( &q->mutex );
+	int64_t cost = packet_cost(packet);
+	if (cost > INT_MAX - q->mem_used || q->packets >= FF_QUEUE_MAX_PACKETS) {
+		pthread_mutex_unlock(&q->mutex);
+		return 1;
+	}
+
+	PacketNode *node = acalloc( 1, sizeof( PacketNode ) );
+	if (!node) {
+		pthread_mutex_unlock(&q->mutex);
+		return 1;
+	}
+	LinkedListNode_init( (LinkedListNode*)node);
+
+	if (av_packet_ref(&node->packet, packet) < 0) {
+		afree(node);
+		pthread_mutex_unlock(&q->mutex);
+		return 1;
+	}
+
+	LinkedList_append( &q->list, (LinkedListNode*) node);
+	
+	q->mem_used += cost;
+	q->packets  ++;
+	pthread_mutex_unlock( &q->mutex );
+	return 0;
+}
+
+// ************************************************************
+//
+//	_get_packet
+//
+// ************************************************************
+static AVPacket *_get_packet( AVQueue *q, AVPacket *packet )
+{
+	pthread_mutex_lock( &q->mutex );
+	PacketNode *node = (PacketNode*)q->list.first;
+	if( !node ) {
+		pthread_mutex_unlock( &q->mutex );
+		return NULL;
+	}	
+
+	LinkedList_remove( &q->list, (LinkedListNode*)node );
+
+	*packet = node->packet;
+	afree( node );
+	
+	q->mem_used -= packet_cost(packet);
+	q->packets  --;
+	
+	pthread_mutex_unlock( &q->mutex );
+	return packet;
+} 
+
+// ************************************************************
+//
+//	_peek_packet
+//
+// ************************************************************
+static AVPacket *_peek_packet( AVQueue *q, AVPacket *packet, int at )
+{
+	pthread_mutex_lock( &q->mutex );
+	PacketNode *node = (PacketNode*)LinkedList_entryAt( &q->list, at );
+	if( !node ) {
+		pthread_mutex_unlock( &q->mutex );
+		return NULL;
+	}	
+
+	*packet = node->packet;
+	
+	pthread_mutex_unlock( &q->mutex );
+	return packet;
+} 
+
+// ************************************************************
+//
+//	_flush_packets
+//
+// ************************************************************
+static int _flush_packets( AVQueue *q, const char *tag )
+{
+DBGP serprintf("flush_packets[%s] [%4d|%8d]->", tag, q->packets, q->mem_used );
+	while( 1 ) {
+		AVPacket _packet;
+		AVPacket *packet = _get_packet( q, &_packet );
+		if( !packet ) {
+			break;
+		}
+
+		_dispose_packet( &_packet );
+	}
+DBGP serprintf("[%4d|%8d]\r\n", q->packets, q->mem_used );
+	return 0;
+}
+
+// Subtitle history must not fill the A/V queue budget or force a media seek.
+// Keep PGS recovery epochs, recent DVD data, active text and demux lookahead.
+#define SUB_CACHE_MAX_BYTES (8 * 1024 * 1024)
+#define SUB_CACHE_MAX_PACKETS 2048
+#define SUB_CACHE_HISTORY_MS 60000
+
+static SUB_PROPERTIES *_subtitle_props_for_stream(STREAM *s, int stream)
+{
+	for (int i = 0; i < ff_p->av.subs_max; ++i) {
+		SUB_PROPERTIES *sub = &ff_p->av.sub[i];
+		if (sub->valid && sub->stream == stream)
+			return sub;
+	}
+	return NULL;
+}
+
+static int64_t _subtitle_packet_time(STREAM *s, AVPacket *packet)
+{
+	int64_t pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+	if (pts == AV_NOPTS_VALUE)
+		return AV_NOPTS_VALUE;
+	return av_rescale_q(pts, ff_p->fmt->streams[packet->stream_index]->time_base,
+		(AVRational){1, 1000}) - ff_p->start_time;
+}
+
+static int64_t _subtitle_switch_time(STREAM *s)
+{
+	int time = s->video_time >= 0 ? s->video_time : 0;
+	return (int64_t)TS_TO_RST_TIME(time, int64_t) - s->subtitle_offset;
+}
+
+// A PGS acquisition/epoch PCS invalidates all preceding object/palette state.
+// Segment headers must be complete before inspecting the composition state.
+static int _pgs_recovery_packet(const AVPacket *packet)
+{
+	int pos = 0;
+	while (packet->size - pos >= 3) {
+		const uint8_t *seg = packet->data + pos;
+		int len = (seg[1] << 8) | seg[2];
+		if (len > packet->size - pos - 3) return 0;
+		if (seg[0] == 0x16 && len >= 11 && (seg[10] & 0xc0)) return 1;
+		pos += 3 + len;
+	}
+	return 0;
+}
+
+static int _subtitle_packet_expired(STREAM *s, AVPacket *packet, int64_t now)
+{
+	int64_t start = _subtitle_packet_time(s, packet);
+	SUB_PROPERTIES *sub = _subtitle_props_for_stream(s, packet->stream_index);
+	if (start == AV_NOPTS_VALUE || !sub || sub->format == SUB_FORMAT_PGS)
+		return 0; // PGS state expires at a recovery point, never by age alone.
+	int64_t duration = av_rescale_q(packet->duration,
+		ff_p->fmt->streams[packet->stream_index]->time_base, (AVRational){1, 1000});
+	int64_t retention = sub->gfx ? MAX(duration, SUB_CACHE_HISTORY_MS) :
+		(duration > 0 ? duration : SUB_CACHE_HISTORY_MS);
+	return start + retention <= now;
+}
+
+static void _remove_cached_subtitle(AVQueue *q, LinkedListNode *it)
+{
+	PacketNode *node = (PacketNode *)it;
+	LinkedList_remove(&q->list, it);
+	q->mem_used -= packet_cost(&node->packet);
+	q->packets--;
+	av_packet_unref(&node->packet);
+	afree(node);
+}
+
+static void _drop_cached_subtitle_stream(AVQueue *q, int stream)
+{
+	for (LinkedListNode *it = q->list.first, *next; it; it = next) {
+		next = it->next;
+		if (((PacketNode *)it)->packet.stream_index == stream)
+			_remove_cached_subtitle(q, it);
+	}
+}
+
+static LinkedListNode *_subtitle_recovery_point(STREAM *s, int stream, int64_t now)
+{
+	LinkedListNode *recovery = NULL;
+	for (LinkedListNode *it = ff_p->sub_cache.list.first; it; it = it->next) {
+		AVPacket *packet = &((PacketNode *)it)->packet;
+		if (packet->stream_index != stream || !_pgs_recovery_packet(packet)) continue;
+		int64_t time = _subtitle_packet_time(s, packet);
+		// Keep the last acquisition before the visible position, plus future
+		// demux lookahead. A future epoch must not evict the current one.
+		if (time != AV_NOPTS_VALUE && time > now) {
+			if (!recovery) recovery = it;
+			break;
+		}
+		recovery = it;
+	}
+	return recovery;
+}
+
+static void _cache_subtitle_packet(STREAM *s, AVPacket *packet)
+{
+	AVQueue *q = &ff_p->sub_cache;
+	int64_t now = _subtitle_switch_time(s);
+	// Only the parser thread mutates this cache; switching idles that thread.
+	for (LinkedListNode *it = q->list.first, *next; it; it = next) {
+		next = it->next;
+		if (_subtitle_packet_expired(s, &((PacketNode *)it)->packet, now))
+			_remove_cached_subtitle(q, it);
+	}
+	for (int i = 0; i < ff_p->av.subs_max; ++i) {
+		SUB_PROPERTIES *sub = &ff_p->av.sub[i];
+		if (sub->format != SUB_FORMAT_PGS) continue;
+		LinkedListNode *recovery = _subtitle_recovery_point(s, sub->stream, now);
+		if (!recovery) continue;
+		for (LinkedListNode *it = q->list.first, *next; it != recovery; it = next) {
+			next = it->next;
+			if (((PacketNode *)it)->packet.stream_index == sub->stream)
+				_remove_cached_subtitle(q, it);
+		}
+	}
+	if (packet_cost(packet) > SUB_CACHE_MAX_BYTES) {
+		_drop_cached_subtitle_stream(q, packet->stream_index);
+		return;
+	}
+	while (q->packets && (q->packets >= SUB_CACHE_MAX_PACKETS ||
+	       q->mem_used + packet_cost(packet) > SUB_CACHE_MAX_BYTES)) {
+		PacketNode *oldest = (PacketNode *)q->list.first;
+		SUB_PROPERTIES *sub = _subtitle_props_for_stream(s, oldest->packet.stream_index);
+		if (sub && sub->format == SUB_FORMAT_PGS) {
+			// Resource limits remain bounded. Drop the whole affected history;
+			// replay must wait for a new acquisition, never use a partial epoch.
+			_drop_cached_subtitle_stream(q, oldest->packet.stream_index);
+		} else {
+			_remove_cached_subtitle(q, &oldest->s);
+		}
+	}
+	if (!_subtitle_packet_expired(s, packet, now) && _add_packet(q, packet))
+		_drop_cached_subtitle_stream(q, packet->stream_index);
+}
+
+static int _reset_subtitle(STREAM *s)
+{
+	_flush_packets(&ff_p->sq, "SUB_SWITCH");
+	if (s->subtitle->ext) return 0;
+	int64_t now = _subtitle_switch_time(s);
+	LinkedListNode *start = ff_p->sub_cache.list.first;
+	if (s->subtitle->format == SUB_FORMAT_PGS) {
+		start = _subtitle_recovery_point(s, s->subtitle->stream, now);
+		if (!start)
+			DBGS serprintf("subtitle switch: PGS history incomplete, waiting for fresh decoder state\n");
+	}
+	for (LinkedListNode *it = start; it; it = it->next) {
+		AVPacket *packet = &((PacketNode *)it)->packet;
+		if (packet->stream_index == s->subtitle->stream &&
+		    !_subtitle_packet_expired(s, packet, now) && _add_packet(&ff_p->sq, packet)) {
+			_flush_packets(&ff_p->sq, "SUB_SWITCH_FAILED");
+			return 1;
+		}
+	}
+	DBGS serprintf("subtitle switch: stream=%d replay=%d packets at=%lldms\n",
+		s->subtitle->stream, ff_p->sq.packets, (long long)now);
+	return 0;
+}
+
+extern int stream_drive_wake_sleep;
+
+// audio_speed > 1 means that parsers are outputting audio/video quicker with smaller time units yielding smaller timestamps
+// this means that real stream time = timestamps * audio_speed or rst = ts * as
+// conversely timestamp = real stream time / audio_speed or ts = rst / as
+// ts = rst/as: i.e. ts<rst when as>1
+
+#define GET_AUDIO_TS( ts ) ( ts == AV_NOPTS_VALUE ? STREAM_NO_PTS_VALUE : (INT64)ts * 1000 * (INT64)s->audio->scale / s->audio->rate )
+#define GET_VIDEO_TS( ts ) ( ts == AV_NOPTS_VALUE ? -1 : (INT64)ts * 1000 * (INT64)ff_p->time_base_num / ff_p->time_base_den )
+#define GET_SUB_TS( ts )   ( ts == AV_NOPTS_VALUE ? -1 : (INT64)ts * 1000 * (INT64)s->subtitle->scale / s->subtitle->rate )
+
+// ************************************************************
+//
+//	_get_video_media_time / _get_video_time
+//	Preserve original RST for video reordering; expose TS to the engine.
+//
+// ************************************************************
+static int _get_video_media_time( STREAM *s, AVPacket *packet )
+{
+	int t = ( use_pts && packet->pts != AV_NOPTS_VALUE ) ? GET_VIDEO_TS( packet->pts ) : GET_VIDEO_TS( packet->dts );
+	if (t == -1) return -1;
+	return t - ff_p->start_time;
+}
+
+static int _get_video_time( STREAM *s, AVPacket *packet )
+{
+	int t = _get_video_media_time(s, packet);
+	return t == -1 ? -1 : RST_TO_TS_TIME(t, int);
+}
+
+// ************************************************************
+//
+//	_get_audio_time
+//	returns the audio timestamp in milliseconds in ts domain
+//
+// ************************************************************
+static int _get_audio_time( STREAM *s, AVPacket *packet )
+{
+	int t = GET_AUDIO_TS( packet->pts );
+	if (t == STREAM_NO_PTS_VALUE) return STREAM_NO_PTS_VALUE;
+	t -= ff_p->start_time;
+	return RST_TO_TS_TIME(t, int);
+}
+
+// ************************************************************
+//
+//     _get_subtitle_time
+//	returns the subtitle timestamp in milliseconds in ts domain
+//
+// ************************************************************
+// _get_subtitle_time returns ts = rst / as
+static int _get_subtitle_time( STREAM *s, AVPacket *packet )
+{
+	int t = GET_SUB_TS( packet->pts );
+	if (t == -1) return -1;
+	t -= ff_p->start_time;
+	return RST_TO_TS_TIME(t, int);
+}
+
+// ************************************************************
+//
+//	_parse_once
+//
+// ************************************************************
+enum { FF_PARSE_ERROR = -1, FF_PARSE_PROGRESS = 0, FF_PARSE_END = 1, FF_PARSE_WAIT = 2 };
+
+static int parser_read_error(STREAM *s, int error)
+{
+	if (!ff_p->read_failed) serprintf("FFMPEG: input/queue failure: %s\n", av_err2str(error));
+	ff_p->read_failed = 1;
+	stream_set_error(s, VE_FILE_ERROR);
+	return FF_PARSE_ERROR;
+}
+
+// A read-ahead failure does not invalidate packets already admitted to the
+// queues. Drain those packets and decoder/sink output before reporting the file
+// error. A seek failure cannot use this path: its consumers are still idle.
+static int parser_input_error(STREAM *s, int result, int demux_result)
+{
+	AVIOContext *pb = ff_p->fmt->pb;
+	serprintf("FFMPEG: read failure: %s demux=%d io=%d eof=%d pos=%lld size=%lld "
+		"aq=%d vq=%d; %s\n", av_err2str(result), demux_result,
+		pb ? pb->error : 0, pb ? pb->eof_reached : 0,
+		(long long)(pb ? avio_tell(pb) : -1),
+		ff_p->size_known ? (long long)ff_p->size : -1LL,
+		queue_packets(&ff_p->aq), queue_packets(&ff_p->vq),
+		ff_p->seeking ? "seek failed" : "draining queued media before error");
+	if (ff_p->seeking)
+		return parser_read_error(s, result);
+	ff_p->read_failed = 1;
+	s->parser_error = 1;
+	s->audio_parse_end = s->video_parse_end = 1;
+	return FF_PARSE_ERROR;
+}
+
+// Reserve bounded headroom for the audio packet that ends starvation. Never
+// retain unlimited keyframes/subtitles while scanning a long audio gap.
+static int enqueue_media_packet(STREAM *s, AVQueue *q, AVPacket *packet, int audio_starved)
+{
+	int64_t budget = MAX(ff_p->buffer_size, 1024 * 1024);
+	int64_t cost = packet_cost(packet);
+	int64_t used = (int64_t)queue_bytes(&ff_p->aq) + queue_bytes(&ff_p->vq) + queue_bytes(&ff_p->sq);
+	if (cost > budget) return parser_read_error(s, AVERROR(ENOMEM));
+	if (q == &ff_p->vq) {
+		if (audio_starved && (used + cost > budget || q->packets >= FF_QUEUE_MAX_PACKETS - 1)) {
+			ff_p->drop_video_until_key = 1;
+			return 0;
+		}
+		if (ff_p->drop_video_until_key) {
+			if (!(packet->flags & AV_PKT_FLAG_KEY)) return 0;
+			ff_p->drop_video_until_key = 0;
+		}
+	}
+	// One admitted packet may cross the normal budget. Beyond that, fail
+	// explicitly instead of silently losing audio or allocating without limit.
+	if (used + cost > budget * 2 || _add_packet(q, packet))
+		return parser_read_error(s, AVERROR(ENOMEM));
+	return 0;
+}
+
+static int _parse_once( STREAM *s, int *timestamp)
+{
+	AVFormatContext *fmt = ff_p->fmt;
+	if (ff_p->read_failed || stream_abort(s)) return FF_PARSE_ERROR;
+	if (s->audio_parse_end && s->video_parse_end) return FF_PARSE_END;
+	
+	if( ff_p->sleeping ) {
+		// we are sleeping, decide whether to wake up
+		if( s->time_parsed < stream_drive_wake_sleep ) {
+			// time to wake up
+DBGP serprintf("FFMPEG: wake\r\n");
+			ff_p->sleeping = 0;
+		} else {
+			return FF_PARSE_WAIT;
+		}
+	}
+
+	int64_t mem_used = (int64_t)queue_bytes(&ff_p->aq) + queue_bytes(&ff_p->vq) + queue_bytes(&ff_p->sq);
+
+	// If the audio queue is empty while the audio stream is still valid and
+	// not yet at EOF, video packets have been monopolizing the shared buffer
+	// and starving audio. Keep demuxing past the normal buffer_size cap in
+	// that case instead of deadlocking with audio starved forever - memory
+	// is bounded by enqueue_media_packet(), including retained keyframes and
+	// the selected subtitle queue.
+	int audio_packets = queue_packets(&ff_p->aq);
+	int audio_starved = s->audio->valid && audio_packets == 0 && !s->audio_parse_end;
+
+	// Small access units (notably TrueHD) can exhaust the packet count well
+	// before the byte budget. Stop BEFORE av_read_frame: queue capacity is
+	// backpressure, not allocation failure, and the next packet must not be
+	// consumed or dropped. Consumers only remove packets while this producer
+	// runs, so a free slot remains available for the next admission.
+	// Preserve the bounded audio-gap scan and seek-preroll policies below.
+	if (!ff_p->seeking && !audio_starved &&
+	    (audio_packets >= FF_QUEUE_MAX_PACKETS ||
+	     queue_packets(&ff_p->vq) >= FF_QUEUE_MAX_PACKETS ||
+	     queue_packets(&ff_p->sq) >= FF_QUEUE_MAX_PACKETS)) {
+DBGP2		serprintf("FFMPEG: packet queue full, waiting for consumption (audio=%d)\n", audio_packets);
+		return FF_PARSE_WAIT;
+	}
+
+	if( mem_used > ff_p->buffer_size && !audio_starved && !ff_p->seeking ) {
+DBGP2 serprintf("FFMPEG full %d %d %d %d\r\n", ff_p->aq.mem_used, ff_p->vq.mem_used, ff_p->sq.mem_used, ff_p->buffer_size);
+		if( s->time_parsed > stream_drive_wake_sleep && !(ff_p->flags & STREAM_PARSER_FILE_NONLOCAL) ) {
+			// time to sleep
+DBGP serprintf("FFMPEG: sleep\r\n");
+			ff_p->sleeping = 1;
+		}
+		return FF_PARSE_WAIT;
+	}
+
+	// Read the next packet, skipping all packets that aren't for this stream
+	AVPacket packet = { 0 };
+	// Read new packet
+	int result = av_read_frame(fmt, &packet);
+	int demux_result = result;
+	if (result < 0) {
+		av_packet_unref(&packet);
+		if (s->parser_interrupt || stream_abort(s)) return FF_PARSE_WAIT;
+		// Some demuxers translate an AVIO failure to EOF; retain its cause.
+		if (result == AVERROR_EOF && fmt->pb && fmt->pb->error < 0 && fmt->pb->error != AVERROR_EOF)
+			result = fmt->pb->error;
+		if (result == AVERROR(EAGAIN) || result == AVERROR(EINTR)) {
+			if (fmt->pb && (fmt->pb->error == AVERROR(EAGAIN) || fmt->pb->error == AVERROR(EINTR))) {
+				fmt->pb->error = 0;
+				fmt->pb->eof_reached = 0;
+			}
+			return FF_PARSE_WAIT;
+		}
+		if (result != AVERROR_EOF) return parser_input_error(s, result, demux_result);
+		s->video_parse_end = s->audio_parse_end = 1;
+		return FF_PARSE_END;
+	}
+
+	int stream = packet.stream_index;
+DBGP3 serprintf("%8d/%8d/%8d  %4d/%4d/%4d  ", 
+			ff_p->aq.mem_used, ff_p->vq.mem_used, ff_p->sq.mem_used, 
+			ff_p->aq.packets,  ff_p->vq.packets,  ff_p->sq.packets );
+DBGP2 serprintf("pkt [%4d] st %d  size %10d  pos %8lld  %08X  ", 
+			ff_p->packet_count++, stream, packet.size, packet.pos, packet.data );
+	
+	// Packet-routing accounting, gated behind DBGP (Debug[DBG_PARSER]).
+	// Reports periodically how packets are being routed to the
+	// audio/video/subtitle queues, so a demuxer that stops producing audio
+	// packets (or misroutes them) after a seek is visible in a capture with
+	// DBG_PARSER enabled.
+	static int _rt_audio_pkts, _rt_video_pkts, _rt_sub_pkts, _rt_discard_pkts, _rt_video_search_pkts;
+	static int _rt_discard_logged;
+	static int _rt_last_log_ms;
+DBGP {
+		int now_ms = atime();
+		if( _rt_last_log_ms == 0 )
+			_rt_last_log_ms = now_ms;
+		if( now_ms - _rt_last_log_ms >= 2000 ) {
+			serprintf("FFMPEG_ROUTE: a=%d v=%d s=%d discard=%d vsearch=%d  aq=%d/%d vq=%d/%d  a_stream=%d v_stream=%d\n",
+				_rt_audio_pkts, _rt_video_pkts, _rt_sub_pkts, _rt_discard_pkts, _rt_video_search_pkts,
+				ff_p->aq.packets, ff_p->aq.mem_used, ff_p->vq.packets, ff_p->vq.mem_used,
+				s->audio->valid ? s->audio->stream : -1, s->video->valid ? s->video->stream : -1 );
+			_rt_audio_pkts = _rt_video_pkts = _rt_sub_pkts = _rt_discard_pkts = _rt_video_search_pkts = 0;
+			_rt_last_log_ms = now_ms;
+		}
+	}
+
+	if( s->audio->valid && stream == s->audio->stream ) {
+		_rt_audio_pkts++;
+		if( ff_p->aq.packets == 0 && mem_used > ff_p->buffer_size ) {
+			// This packet arrived while searching past buffer_size for audio
+			// (see audio_starved above / the video routing branch below).
+DBGP		serprintf("AUDIO_SEARCH_HIT: overflow=%lld bytes vq=%d/%d\n",
+				(long long)(mem_used - ff_p->buffer_size), ff_p->vq.packets, ff_p->vq.mem_used);
+		}
+		DBG serprintf("FFMPEG:AUDIO pkt st=%d pts=%lld dts=%lld pos=%lld size=%d seek=%d\n",
+			stream,
+			(long long)GET_AUDIO_TS( packet.pts ),
+			(long long)GET_AUDIO_TS( packet.dts ),
+			(long long)packet.pos,
+			packet.size,
+			s->seek);
+DBGP2 serprintf("     AUDIO dts/pts %8lld/%8lld     %02X %02X %02X %02X\r\n", GET_AUDIO_TS( packet.dts ), GET_AUDIO_TS( packet.pts ), packet.data[0], packet.data[1],packet.data[2],packet.data[3] );
+DBGC1 serprintf("     AUDIO dts/pts %8lld/%8lld     %02X %02X %02X %02X  %d\r\n", GET_AUDIO_TS( packet.dts ), GET_AUDIO_TS( packet.pts ), packet.data[0], packet.data[1],packet.data[2],packet.data[3], packet.size );
+		// add audio packet
+		if (ff_p->seeking) {
+			// Consumers are idle until a video keyframe is found. Keep a bounded
+			// rolling audio preroll instead of filling the budget and stalling.
+			while (ff_p->aq.packets && (queue_bytes(&ff_p->aq) + packet_cost(&packet) > ff_p->buffer_size / 2 ||
+			       ff_p->aq.packets >= FF_QUEUE_MAX_PACKETS - 1)) {
+				AVPacket old;
+				if (_get_packet(&ff_p->aq, &old)) av_packet_unref(&old);
+			}
+		}
+		if (enqueue_media_packet(s, &ff_p->aq, &packet, audio_starved)) goto QueueError;
+		if( timestamp )
+			*timestamp = GET_AUDIO_TS( packet.pts );
+	} else if( s->video->valid && stream == s->video->stream ) {
+		_rt_video_pkts++;
+DBGP2 serprintf("VIDEO      dts/pts %8lld/%8lld  %s  %02X %02X %02X %02X\r\n", GET_VIDEO_TS( packet.dts ), GET_VIDEO_TS( packet.pts ), (packet.flags & AV_PKT_FLAG_KEY) ? "I" : " ",
+										packet.data[0], packet.data[1],packet.data[2],packet.data[3]  );
+DBGC4 serprintf("VIDEO      dts/pts %8lld/%8lld  %s  %02X %02X %02X %02X\r\n", GET_VIDEO_TS( packet.dts ), GET_VIDEO_TS( packet.pts ), (packet.flags & AV_PKT_FLAG_KEY) ? "I" : " ",
+										packet.data[0], packet.data[1],packet.data[2],packet.data[3]  );
+		if (enqueue_media_packet(s, &ff_p->vq, &packet, audio_starved)) goto QueueError;
+		if (timestamp) *timestamp = use_pts ? GET_VIDEO_TS(packet.pts) : GET_VIDEO_TS(packet.dts);
+
+	} else if( _subtitle_props_for_stream(s, stream) ) {
+		_rt_sub_pkts++;
+		_cache_subtitle_packet(s, &packet);
+		if (s->subtitle->valid && !s->subtitle->ext && stream == s->subtitle->stream) {
+			if (enqueue_media_packet(s, &ff_p->sq, &packet, audio_starved)) goto QueueError;
+			if (timestamp)
+				*timestamp = GET_SUB_TS(packet.pts);
+		} else if (timestamp) {
+			*timestamp = -1;
+		}
+	} else {
+		_rt_discard_pkts++;
+		// A packet that doesn't match any known stream index. Should be rare
+		// (e.g. extra streams we don't decode). Log the first few occurrences
+		// with the actual index, since a stream suddenly becoming misrouted
+		// here would explain audio packets vanishing.
+		if( _rt_discard_logged < 5 ) {
+			_rt_discard_logged++;
+DBGP		serprintf("FFMPEG_ROUTE_DISCARD: stream=%d a_valid=%d a_stream=%d v_valid=%d v_stream=%d s_valid=%d s_stream=%d\n",
+				stream, s->audio->valid, s->audio->stream, s->video->valid, s->video->stream,
+				s->subtitle->valid, s->subtitle->stream );
+		}
+DBGP2 serprintf("\r\n");
+		if( timestamp )
+			*timestamp = -1;
+	}
+
+	// discard packet
+	av_packet_unref(&packet);
+
+	return FF_PARSE_PROGRESS;
+QueueError:
+	av_packet_unref(&packet);
+	return FF_PARSE_ERROR;
+}
+
+// ************************************************************
+//
+//	_parse
+//
+// ************************************************************
+static int _parse( STREAM *s)
+{
+	// load chunk aggressively, try more often ...
+	int i;
+	for( i = 0; i < 5; i ++ ) {
+		if (s->parser_interrupt)
+			return 0;
+		if( _parse_once( s, NULL ) ) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// ************************************************************
+//
+//	_pauseable
+//
+// ************************************************************
+static int _pauseable( STREAM *s )
+{
+	return 1;
+}
+
+// ************************************************************
+//
+//	_seekable
+//
+// ************************************************************
+static int _seekable(STREAM *s)
+{
+	if (s->etype == ETYPE_RTSP) return 0;
+	AVFormatContext *fmt = ff_p->fmt;
+	if (fmt->pb) return !!(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL);
+	// Demuxers such as HLS own their I/O and provide timestamp seeks.
+	return fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0;
+}
+
+// ************************************************************
+//
+//	_seek
+//
+// ************************************************************
+static int _seek( STREAM *s, int time, int pos, int dir, int flags, int force_reload, STREAM_CHUNK *sc )
+{
+	// time argument is rst
+DBGP serprintf("FFMPEG: seek: time %8d  pos %5d  dir %d\r\n", time, pos, dir); 
+	AVFormatContext *fmt = ff_p->fmt;
+	int start = atime();
+	
+	ff_p->last_audio_time = 0;
+	
+	int av_flags = dir & STREAM_SEEK_BACKWARD ? AVSEEK_FLAG_BACKWARD : 0;
+	
+	INT64 new_pos;
+	if( time == -1 ) {
+		// seek to pos
+		if (!ff_p->size_known || pos < 0 || pos > STREAM_POS_MAX) return 1;
+		new_pos = av_rescale(s->size, pos, STREAM_POS_MAX);
+		av_flags |= AVSEEK_FLAG_BYTE;
+		
+		if( new_pos > s->size ) {
+			// pos is beyond end of file - what do we do now?
+			DBGP serprintf("at end %lld %llu\r\n", new_pos, s->size);
+			// eof reached, stop playback
+			s->video_parse_end = 1;
+			s->audio_parse_end = 1;
+			if ( s->size > 1024 * 1024ul ) {
+				new_pos = s->size - 1024 * 1024ul; // 1MB before end
+			} else {
+				new_pos = 0;
+			}
+		}
+DBGP serprintf("FFMPEG: new pos: %lld\r\n", new_pos );
+	} else {
+		// TODO: start_time is ts: bug mixing time domains
+		new_pos = ((INT64)time + ff_p->start_time) * AV_TIME_BASE / 1000;
+		DBGP serprintf( "FFMPEG: new time: %lld\r\n", new_pos );
+	}
+
+	__attribute__((unused))	
+	int stream = s->video->valid ? s->video->stream : s->audio->stream;
+#if 0
+	int ret = av_seek_frame( fmt, stream, new_pos, 1 );
+#else
+	int64_t seek_min    = dir == STREAM_SEEK_FORWARD ? new_pos : INT64_MIN;
+	int64_t seek_max    = dir == STREAM_SEEK_BACKWARD ? new_pos : INT64_MAX;
+
+	int ret = avformat_seek_file( fmt, -1, seek_min, new_pos, seek_max, av_flags);
+#endif
+
+	if( ret < 0 ) {
+serprintf("FFMPEG: seek error\r\n"); 
+		return 1;
+	}
+	
+	s->audio_parse_end = 0;
+	s->video_parse_end = 0;
+	ff_p->read_failed = 0;
+	s->parser_error = 0;
+	ff_p->drop_video_until_key = 0;
+
+	_flush_packets( &ff_p->vq, "VID" );
+	_flush_packets( &ff_p->aq, "AUD" );
+	_flush_packets( &ff_p->sq, "SUB" );
+	_flush_packets( &ff_p->sub_cache, "SUB_CACHE" );
+
+	ff_p->sleeping = 0;
+	
+	// retry until we get a video frame
+	int ignore_first = 0;
+	if( s->video->format == VIDEO_FORMAT_MPEG ) {
+		// for some f*cking reason, lavf is unable to give 
+		// us a good key frame after seek in TS, so we scan until
+		// the next one...doh
+		ignore_first = 1;
+	}
+
+	int found = 0;
+	int deadline = atime();
+	ff_p->seeking = 1;
+	while ((unsigned)(atime() - deadline) < 5000) {
+		if (stream_abort(s) || s->parser_interrupt) break;
+		int parsed = _parse_once(s, NULL);
+		if (parsed == FF_PARSE_ERROR) break;
+		if (!s->video->valid) {
+			AVPacket audio;
+			if (_peek_packet(&ff_p->aq, &audio, 0)) {
+				sc->time = _get_audio_time(s, &audio);
+				if (sc->time < 0) sc->time = RST_TO_TS_TIME(MAX(time, 0), int);
+				found = 1;
+				break;
+			}
+		}
+		if (parsed == FF_PARSE_WAIT) msec_sleep(5);
+		
+		AVPacket _packet;
+		AVPacket *packet = _peek_packet( &ff_p->vq, &_packet, 0 );
+		if (!packet && parsed == FF_PARSE_END) break;
+		if( packet ) {
+			int ts = _get_video_time( s, packet ); // returns ts
+			DBG2 serprintf( "stream_parser_ffmpeg:_seek time %d, pos %d, rt=%d -> ts=%d\n", time, pos, (int)( audio_interface_get_audio_speed() * ts ), ts );
+
+			if( packet->flags & AV_PKT_FLAG_KEY ) {
+				if( ignore_first ) {
+DBGP serprintf("ignore! %d\n", ts);
+					ignore_first--;
+				} else if( ts != -1 ) {
+					sc->time = ts; // stream chunk is ts
+					found = 1;
+					break;
+				}
+			} else {
+DBGP serprintf("nokey!  %d\n", ts);
+			}
+			packet = _get_packet( &ff_p->vq, &_packet );
+			_dispose_packet( packet );			
+		}
+	}
+	ff_p->seeking = 0;
+	if (!found) {
+		serprintf("FFMPEG: seek did not find a usable starting packet\n");
+		if (!stream_abort(s)) parser_read_error(s, AVERROR_INVALIDDATA);
+		return 1;
+	}
+DBGP serprintf("FFMPEG: seek to time %8d  pos %5d  dir %d -> %d/%lld  (took %d)\r\n", time, pos, dir, sc->time, sc->pos, atime() - start ); 
+	if( s->audio->valid ) {
+		while( 1 ) {
+			AVPacket _packet;
+			AVPacket *packet = _peek_packet( &ff_p->aq, &_packet, 0 );
+
+			if( !packet )
+				break;
+
+			int ts = _get_audio_time( s, packet );
+			if( ts >= sc->time ) { // comparison made in ts domain
+				break;
+			}
+DBGP serprintf("audio!  %d\n", ts);
+			packet = _get_packet( &ff_p->aq, &_packet );
+			_dispose_packet( packet );			
+		}
+	}
+	
+	return 0;
+}
+
+static int _seek_time( STREAM *s, int time, int dir, int flags, int force_reload, STREAM_CHUNK *sc )
+{
+	// time is rst
+	return _seek( s, time, -1, dir, flags, force_reload, sc );
+}
+
+static int _seek_pos( STREAM *s, int time, int dir, int flags, int force_reload, STREAM_CHUNK *sc )
+{
+	return _seek( s, -1, time, dir, flags, force_reload, sc );
+}
+
+// ************************************************************
+//
+//	_get_audio_cdata
+//
+// ************************************************************
+static int _get_audio_cdata( STREAM *s, CLEVER_BUFFER *audio_buffer, STREAM_CDATA *cdata )
+{
+	if( cdata->valid != 0 ) {
+		return 0;
+	}
+	
+	// drop audio until we have a video key frame
+	if( s->video->valid && ff_p->need_key ) {
+		return 1;
+	}
+	
+	AVPacket _packet;
+	AVPacket *packet = _get_packet( &ff_p->aq, &_packet );
+	if( !packet ) {
+		return 1;
+	}
+
+	if( packet->size < 0 || packet->size > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE ) {
+		_dispose_packet(packet);
+		parser_read_error(s, AVERROR_INVALIDDATA);
+		return 1;
+	}
+	if( audio_buffer->size < packet->size + AV_INPUT_BUFFER_PADDING_SIZE ) {
+		if ( realloc_clever_buffer( audio_buffer, packet->size + AV_INPUT_BUFFER_PADDING_SIZE ) ) {
+			_dispose_packet(packet);
+			parser_read_error(s, AVERROR(ENOMEM));
+			return 1;
+		}
+	}
+
+	// copy relevant chunk info:
+	memset( cdata, 0, sizeof( STREAM_CDATA ) );
+
+	cdata->type 	  = 0;
+	cdata->key   	  = 1;
+	cdata->size       = packet->size;
+	cdata->time       = _get_audio_time( s, packet );
+	cdata->frame      = 0;
+	cdata->pos        = packet->pos;
+	
+	if( cdata->time != STREAM_NO_PTS_VALUE ) {
+		if( ff_p->last_audio_time && abs(cdata->time - ff_p->last_audio_time) > 1000 ) {
+			DBG serprintf("FF: audio_skip! %d\n", cdata->time - ff_p->last_audio_time );
+			cdata->audio_skip = 1;
+		}
+		ff_p->last_audio_time = cdata->time;
+	}
+	
+DBGC2  serprintf(" A   siz %6d  pos %8lld   tim %8d  pkt %6d  %8d\r\n", packet->size, packet->pos, cdata->time, ff_p->aq.packets, ff_p->aq.mem_used );
+	memcpy( audio_buffer->data, packet->data, packet->size );
+	memset( audio_buffer->data + packet->size, 0, AV_INPUT_BUFFER_PADDING_SIZE );
+	
+	cdata->valid = CHUNK_VALID;
+
+	_dispose_packet( packet );
+	return 0;
+}
+
+// ************************************************************
+//
+//	_peek_n_audio_chunk
+//
+// ************************************************************
+static STREAM_CHUNK *_peek_n_audio_chunk(STREAM *s, int n, UCHAR **data )
+{
+	AVPacket _packet;
+	AVPacket *packet = _peek_packet( &ff_p->aq, &_packet, 0 );
+	if( !packet ) {
+		return NULL;
+	}
+	STREAM_CHUNK *sc = &ff_p->sc;
+
+	sc->stream = s->audio->stream;
+	sc->size   = packet->size;
+	if( data ) { 
+		*data = packet->data;
+	}
+	return sc;
+}
+
+// ************************************************************
+//
+//	_get_video_cdata
+//
+// ************************************************************
+static int _get_video_cdata( STREAM *s, CBE *cbe, STREAM_CDATA *cdata )
+{
+	if( cdata->valid != 0 ) {
+		return 0;
+	}
+	
+	AVPacket _packet;
+	AVPacket *packet = _peek_packet( &ff_p->vq, &_packet, 0 );
+	if( !packet ) {
+		return 1;
+	}
+	// Leave the queued packet untouched if the previous access unit still
+	// occupies the destination. Include prefix and Annex B expansion in the check.
+	int required = 0;
+	if (!s->video->no_extra && stream_parser_send_video_extra(s->video, NULL, &required))
+		goto InvalidPacket;
+	if (s->video->avcc || s->video->hvcc) {
+		if (cbe_write_nal_units(NULL, packet->data, packet->size, s->video->nal_unit_size, &required))
+			goto InvalidPacket;
+	} else {
+		if (packet->size < 0 || packet->size > INT_MAX - required) goto InvalidPacket;
+		required += packet->size;
+	}
+	if (required >= cbe_get_size(cbe)) goto InvalidPacket;
+	if (required >= cbe_get_free(cbe)) return 1;
+	packet = _get_packet(&ff_p->vq, &_packet);
+	if (!packet) return 1;
+	memset( cdata, 0, sizeof( STREAM_CDATA ) );
+	
+	if( ff_p->need_key ) {
+		if( !(packet->flags & AV_PKT_FLAG_KEY) ) {
+			goto  ErrorExit;
+		}
+		ff_p->need_key--;
+		if ( ff_p->need_key ) {
+			goto  ErrorExit;
+		}
+	}
+	// copy relevant chunk info:
+	cdata->type 	  = 0;
+	cdata->key   	  = (packet->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
+	cdata->video_media_time = _get_video_media_time(s, packet);
+	cdata->video_media_time_valid = cdata->video_media_time != -1;
+	cdata->time = cdata->video_media_time_valid ?
+		RST_TO_TS_TIME(cdata->video_media_time, int) : -1;
+	cdata->frame      = 0;
+	cdata->pos        = packet->pos;
+DBGC8  serprintf("V    siz %6d  pos %8lld %d tim %8d  pkt %6d  %8d\r\n", packet->size, packet->pos, cdata->key, cdata->time, ff_p->vq.packets, ff_p->vq.mem_used );
+	if( cdata->key ) {
+		// check video props change in case of key frame
+		VIDEO_PROPERTIES new = { 0 };
+		if( !MPEG_get_video_props( ff_p->video->format, &new, packet->data, 1, packet->size ) ) {
+			int changed;
+			MPEG_check_video_changed( ff_p->video, &new, &changed );  
+			if( changed ) {
+				cdata->changed = &ff_p->av;
+			}
+		}
+	}
+
+	if( !s->video->no_extra && s->video->format != VIDEO_FORMAT_WMV3 ) {
+		stream_parser_send_video_extra( s->video, cbe, &cdata->size );
+	}
+	
+#ifdef CONFIG_H264
+	if( s->video->avcc ) {
+		H264_parse_NAL( (UCHAR*)packet->data, packet->size, cbe, &cdata->size, s->video->nal_unit_size );
+	} else 
+#endif
+#ifdef CONFIG_HEVC
+	if( s->video->hvcc ) {
+		HEVC_parse_NAL( (UCHAR*)packet->data, packet->size, cbe, &cdata->size, s->video->nal_unit_size );
+	} else 
+#endif
+	{
+		cbe_write( cbe, (UCHAR*)packet->data, packet->size);
+		cdata->size  += packet->size;
+	}	
+	
+	cdata->valid  = CHUNK_VALID;
+ErrorExit:	
+	_dispose_packet( packet );
+
+	return 0;
+InvalidPacket:
+	serprintf("FFMPEG: invalid/oversized video access unit (%d bytes)\n", packet->size);
+	stream_set_error(s, VE_FILE_ERROR);
+	return 1;
+}
+
+static int msk_fixup_ssa( char *dst, int max, const char *src, int src_size, int time, int duration )
+{
+	const char *layer = NULL;
+	const char *ptr = src; 
+	const char *end = src + src_size;
+	
+	// skip the count
+	for ( ; *ptr != ',' && ptr < end - 1; ptr++ );
+	
+	// we are at the layer tag
+	if ( *ptr == ',' )
+		layer = ++ptr;
+	
+	// find next comma
+	for ( ; *ptr != ',' && ptr < end - 1; ptr++ );
+	
+	// we are at the rest to copy verbatim
+	if ( layer && *ptr == ',' ) {
+		int sc =  time / 10;
+		int ec = (time + duration) / 10;
+		
+		int sh  = sc / 360000;
+		    sc -= 360000 * sh;
+		int sm  = sc / 6000;
+		    sc -= 6000 * sm;
+		int ss  = sc / 100;
+		    sc -= 100 * ss;
+		
+		int eh  = ec / 360000;
+		    ec -= 360000 * eh;
+		int em  = ec / 6000;
+		    ec -= 6000 * em;
+		int es  = ec / 100;
+		    ec -= 100 * es;
+		char *layere = (char*)ptr;
+		
+		*layere = '\0';
+		snprintf( dst, max, "Dialogue: %s,%d:%02d:%02d.%02d,%d:%02d:%02d.%02d,", layer, sh, sm, ss, sc, eh, em, es, ec );
+		*layere = ',';
+		
+		max -= strlen(dst) + 3;
+		char *d = dst + strlen(dst);
+		ptr ++;
+		while( max-- > 0 && *ptr && ptr != end )
+			*d++ = *ptr++;
+		*d++ = '\r';
+		*d++ = '\n';
+		*d++ = '\0';
+	} else {
+		strcpy( dst, "" );
+	}
+	return strlen( dst );
+}
+
+static int msk_fixup_srt( char *dst, int max, const char *src, int src_size, int time, int duration )
+{
+	char *d = dst;
+	max --;
+	snprintf( d, max, "%d:%d,", time, time + duration );
+	max -= strlen(dst);
+	d   += strlen(dst);
+	int copy = MIN( max, src_size );
+	snprintf( d, copy + 1, "%s", src );
+	return strlen( dst );
+}
+
+// ************************************************************
+//
+//	_get_subtitle_cdata
+//
+// ************************************************************
+static int _get_subtitle_cdata( STREAM *s, CLEVER_BUFFER *sub_buffer, STREAM_CDATA *cdata )
+{
+	if( cdata->valid != 0 ) {
+		return 0;
+	}
+
+	AVPacket _packet;
+	AVPacket *packet;
+	while ((packet = _get_packet(&ff_p->sq, &_packet))) {
+		if (!s->subtitle->ext && packet->stream_index == s->subtitle->stream)
+			break;
+		_dispose_packet(packet);
+	}
+	if (!packet)
+		return 1;
+
+	if (packet->size < 0 || packet->size > INT_MAX - 128) {
+		_dispose_packet(packet);
+		parser_read_error(s, AVERROR_INVALIDDATA);
+		return 1;
+	}
+	if( sub_buffer->size < packet->size + 128 ) {
+serprintf("realloc %d -> %d \r\n", sub_buffer->size, packet->size );
+		if ( realloc_clever_buffer( sub_buffer, packet->size + 128 ) ) {
+			_dispose_packet(packet);
+			parser_read_error(s, AVERROR(ENOMEM));
+			return 1;
+		}
+	}
+
+	// copy relevant chunk info:
+	memset( cdata, 0, sizeof( STREAM_CDATA ) );
+
+	cdata->type 	  = 0;
+	cdata->key   	  = 1;
+	cdata->size       = packet->size;
+	cdata->time       = _get_subtitle_time( s, packet ); // ts domain
+	cdata->frame      = 0;
+	cdata->pos        = packet->pos;
+DBGC32 serprintf("  S  siz %6d  pos %8lld   tim %8d  pkt %6d  %8d\r\n", packet->size, packet->pos, cdata->time, ff_p->sq.packets, ff_p->sq.mem_used );
+
+	
+	int duration_rst = GET_SUB_TS( packet->duration );
+	int duration_ts = RST_TO_TS_DELTA(duration_rst, int);
+	cdata->subtitle_duration = duration_ts;
+	if( s->subtitle->format == SUB_FORMAT_SSA ) {
+		cdata->size = msk_fixup_ssa( sub_buffer->data, sub_buffer->size, packet->data, packet->size, cdata->time, duration_ts );
+	} else if( s->subtitle->format == SUB_FORMAT_TEXT ) {
+		cdata->size = msk_fixup_srt( sub_buffer->data, sub_buffer->size, packet->data, packet->size, cdata->time, duration_ts );
+	} else {
+		memcpy( sub_buffer->data, packet->data, packet->size );
+	}
+	cdata->valid = CHUNK_VALID;
+
+	_dispose_packet( packet );			
+	return 0;
+}
+
+// ************************************************************
+//
+//	_seek_by_index
+//
+// ************************************************************
+static int _seek_by_index( STREAM *s, int idx_size, void *idx_data, int force_reload, STREAM_CHUNK *sc )
+{
+	return 1;
+}
+
+// ************************************************************
+//
+//	_get_index
+//
+// ************************************************************
+static int _get_index( STREAM *s, int *time, void **data, int *size )
+{
+	if( data )
+		*data = NULL;
+	if( size )
+		*size = 0;
+	
+	return 1;
+}
+
+// ************************************************************
+//
+//	_set_audio_stream
+//
+// ************************************************************
+static int _set_audio_stream( STREAM *s, int audio_stream )
+{
+	return stream_parser_set_audio_stream( s, audio_stream);
+}
+
+// ************************************************************
+//
+//	_calc_rate
+//
+// ************************************************************
+static int _calc_rate( STREAM *s ) {
+	if( s->audio->valid ) {
+		pthread_mutex_lock( &ff_p->aq.mutex );
+		PacketNode *first = (PacketNode*)ff_p->aq.list.first;
+		PacketNode *last  = (PacketNode*)ff_p->aq.list.last;
+		if( first && last ) {
+			int first_time   = GET_AUDIO_TS( first->packet.dts ); // rst domain
+			int last_time    = GET_AUDIO_TS( last->packet.dts ); // rst domain
+			UINT64 first_pos = first->packet.pos;
+			UINT64 last_pos  = last->packet.pos;
+
+			s->atime_parsed = last_time - first_time; // rst domain
+			if( s->atime_parsed ) {
+				s->acurrent_rate = (UINT64)( last_pos - first_pos ) * (UINT64)1000 / s->atime_parsed;
+			} else {
+				s->acurrent_rate = 0;
+			}
+//serprintf("A: 1st %8d  last %8d  diff %8d  rate %8d\r\n", first_time, last_time, s->atime_parsed, s->acurrent_rate );
+		}
+		
+		pthread_mutex_unlock( &ff_p->aq.mutex );
+	}
+	if( s->video->valid ) {
+		pthread_mutex_lock( &ff_p->vq.mutex );
+		PacketNode *first = (PacketNode*)ff_p->vq.list.first;
+		PacketNode *last  = (PacketNode*)ff_p->vq.list.last;
+		if( first && last ) {
+			int first_time   = GET_VIDEO_TS( first->packet.dts ); // rst domain
+			int last_time    = GET_VIDEO_TS( last->packet.dts ); // rst domain
+			UINT64 first_pos = first->packet.pos;
+			UINT64 last_pos  = last->packet.pos;
+
+			s->vtime_parsed = last_time - first_time; // rst domain
+			if( s->atime_parsed ) {
+				// Compensate for compressed timeline in bitrate calculation
+				// Note: intentionally uses s->atime_parsed for consistency with audio timeline
+				s->vcurrent_rate = (UINT64)(last_pos - first_pos) * (UINT64)1000 / s->atime_parsed;
+			} else {
+				s->vcurrent_rate = 0;
+			}
+//serprintf("V: 1st %8d  last %8d  diff %8d  rate %8d\r\n", first_time, last_time, s->vtime_parsed, s->vcurrent_rate );
+		}
+		
+		pthread_mutex_unlock( &ff_p->vq.mutex );
+	}
+
+	
+	if ( s->audio->valid && s->video->valid ) {
+		s->time_parsed  = MIN( s->vtime_parsed,  s->atime_parsed  ); 
+		s->current_rate = MAX( s->vcurrent_rate, s->acurrent_rate ); 
+	} else if ( s->audio->valid ) {
+		s->time_parsed  = s->atime_parsed;
+		s->current_rate = s->acurrent_rate;
+	} else { 
+		s->time_parsed  = s->vtime_parsed;
+		s->current_rate = s->vcurrent_rate;
+	}
+//DBGS2 serprintf("time %5d  rate %8d \r\n", s->time_parsed, s->current_rate );
+
+	return 0;
+}
+
+// ************************************************************
+//
+//	_get_stats
+//
+// ************************************************************
+static STREAM_PARSER_STATS *_get_stats( STREAM *s, STREAM_PARSER_STATS *stats )
+{
+	memset( stats, 0, sizeof( *stats ) );
+	
+	stats->buffer_size   = ff_p->buffer_size;
+	stats->buffer_used   = ff_p->aq.mem_used + ff_p->vq.mem_used;
+	
+	stats->audio_chunks  = ff_p->aq.packets;
+	stats->video_chunks  = ff_p->vq.packets;
+
+	stats->atime_parsed  = s->atime_parsed;
+	stats->vtime_parsed  = s->vtime_parsed;
+	
+	stats->acurrent_rate = s->acurrent_rate;
+	stats->vcurrent_rate = s->vcurrent_rate;
+	
+	return stats;
+}
+
+static STREAM_PARSER stream_parser_FFMPEG = {
+	"FFMPEG",
+	_open,
+	_close,
+	stream_parser_pause,
+	_parse,
+	NULL,		//_parse_chunk,
+	_set_audio_stream,
+	_calc_rate,
+	_get_audio_cdata,
+	_get_video_cdata,
+	_get_subtitle_cdata,
+	_peek_n_audio_chunk,
+	_seek_time,	//_seek_time
+	_seek_pos,	//_seek_pos
+	_seek_by_index,
+	_seekable,	// seekable
+	_pauseable,	// pauseable
+	_get_index,
+	NULL,		// start_next
+	_get_stats,
+	.reset_subtitle = _reset_subtitle,
+};
+
+#ifndef CONFIG_LIVE555_RTSP
+STREAM_REGISTER_PARSER( ETYPE_RTSP, stream_parser_FFMPEG );
+static STREAM_IO *_dummy_new( STREAM_URL *src ) 
+{
+	return NULL;
+}
+static char proto[] = "rtsp://";
+STREAM_REGISTER_IO( proto, _dummy_new, STREAM_IO_NONLOCAL, ETYPE_RTSP );
+#endif
+
+// *****************************************************************************
+//
+//	get_info_FFMPEG
+//
+// *****************************************************************************
+typedef struct metadata_abort_context {
+	FILE_INFO_ABORT abort;
+	void *opaque;
+	int64_t deadline_us;
+} metadata_abort_context;
+
+static int metadata_interrupted(void *opaque)
+{
+	metadata_abort_context *ctx = opaque;
+	return (ctx->abort && ctx->abort(ctx->opaque)) || av_gettime_relative() >= ctx->deadline_us;
+}
+
+static void metadata_tag_string(AVDictionary *dict, const char *key, char *dst, size_t size, ID3_TAG *tag)
+{
+	AVDictionaryEntry *entry = av_dict_get(dict, key, NULL, 0);
+	if (!entry || !entry->value[0]) return;
+	snprintf(dst, size, "%s", entry->value);
+	tag->valid = 1;
+}
+
+static int metadata_tag_number(AVDictionary *dict, const char *key, ID3_TAG *tag)
+{
+	AVDictionaryEntry *entry = av_dict_get(dict, key, NULL, 0);
+	if (!entry) return 0;
+	char *end;
+	errno = 0;
+	long value = strtol(entry->value, &end, 10);
+	if (errno || end == entry->value || value < 0 || value > INT_MAX) return 0;
+	tag->valid = 1;
+	return value;
+}
+
+static int metadata_extract_tags(AVFormatContext *fmt, ID3_TAG *tag, APIC *apic)
+{
+#define TAG(key, field) metadata_tag_string(fmt->metadata, key, tag->field, sizeof(tag->field), tag)
+	TAG("title", title);
+	TAG("artist", artist);
+	TAG("album", album);
+	TAG("album_artist", album_artist);
+	TAG("composer", composer);
+	TAG("author", author);
+	TAG("writer", writer);
+	TAG("genre", genre);
+	TAG("date", year);
+	if (!tag->year[0]) TAG("year", year);
+	TAG("comment", comment);
+	TAG("description", description);
+	TAG("compilation", compilation);
+	TAG("location", location);
+	tag->track = metadata_tag_number(fmt->metadata, "track", tag);
+	tag->discnumber = metadata_tag_number(fmt->metadata, "disc", tag);
+#undef TAG
+	if (!apic) return 0;
+	apic->valid = 0;
+	apic->size = 0;
+	unsigned cap = MIN(apic->buffer_size, APIC_MAX_SIZE);
+	for (unsigned i = 0; i < fmt->nb_streams; i++) {
+		AVStream *st = fmt->streams[i];
+		AVPacket *picture = &st->attached_pic;
+		if (!(st->disposition & AV_DISPOSITION_ATTACHED_PIC) || !picture->data ||
+		    picture->size <= 0 || (unsigned)picture->size > cap) continue;
+		int type;
+		if (st->codecpar->codec_id == AV_CODEC_ID_MJPEG) type = ETYPE_JPG;
+		else if (st->codecpar->codec_id == AV_CODEC_ID_PNG) type = ETYPE_PNG;
+		else continue;
+		if (!apic->buffer) {
+			apic->buffer = amalloc(picture->size);
+			if (!apic->buffer) return 1;
+			apic->buffer_size = picture->size;
+		}
+		memcpy(apic->buffer, picture->data, picture->size);
+		apic->size = picture->size;
+		apic->etype = type;
+		apic->valid = 1;
+		tag->apic = 1;
+		break;
+	}
+	return 0;
+}
+
+static int _get_info_FFMPEG(const STREAM_URL *src, FILE_INFO *info, APIC *apic, FILE_INFO_ABORT abort)
+{
+	int err = 1;
+	AVDictionary *options = NULL;
+	metadata_abort_context cancel = {abort, info->abort_opaque, av_gettime_relative() + 30000000};
+	if (metadata_interrupted(&cancel)) return 1;
+	FF_PRIV *priv = acalloc(1, sizeof(*priv));
+	if (!priv) return 1;
+	av_init_props(priv);
+	priv->fmt = avformat_alloc_context();
+	if (!priv->fmt) goto out;
+	priv->fmt->interrupt_callback = (AVIOInterruptCB){metadata_interrupted, &cancel};
+	av_dict_set(&options, "probesize", "500000", 0);
+	av_dict_set(&options, "analyzeduration", "1000000", 0);
+	ffmpeg_set_http_options(&options, src);
+	if (ffmpeg_open_input(priv, src->url, &options) < 0 || metadata_interrupted(&cancel)) goto out;
+	// analyzeduration is a format option, not a per-decoder option. A failed
+	// probe must not publish a cached success, even when it found some tracks.
+	if (avformat_find_stream_info(priv->fmt, NULL) < 0 || metadata_interrupted(&cancel)) goto out;
+	if (priv->fmt->pb && priv->fmt->pb->error < 0 && priv->fmt->pb->error != AVERROR_EOF) goto out;
+	if (_parse_format(info->etype, priv) || metadata_interrupted(&cancel)) goto out;
+	if (!priv->av.as_max && !priv->av.vs_max) goto out;
+	if (metadata_extract_tags(priv->fmt, &priv->tag, apic)) goto out;
+	memcpy(&info->av, &priv->av, sizeof(info->av));
+	memcpy(&info->id3_tag, &priv->tag, sizeof(info->id3_tag));
+	// Large codec headers belong to AVFormatContext. Metadata results must
+	// not retain dangling references after that context closes.
+	for (int i = 0; i < info->av.vs_max; i++) {
+		info->av.video[i].extraData2 = NULL;
+		info->av.video[i].extraDataSize2 = 0;
+	}
+	for (int i = 0; i < info->av.as_max; i++) {
+		info->av.audio[i].extraData2 = NULL;
+		info->av.audio[i].extraDataSize2 = 0;
+	}
+	for (int i = 0; i < info->av.subs_max; i++) {
+		info->av.sub[i].extraData2 = NULL;
+		info->av.sub[i].extraDataSize2 = 0;
+	}
+	info->size = priv->size;
+	info->duration = priv->duration;
+	err = metadata_interrupted(&cancel) ? 1 : 0;
+out:
+	av_dict_free(&options);
+	if (priv->fmt) avformat_close_input(&priv->fmt);
+	ffmpeg_close_fd_input(priv);
+	afree(priv);
+	return err;
+}
+
+#ifdef CONFIG_MPEG_TS
+#ifdef CONFIG_MPEG_TS_FF
+STREAM_REGISTER_PARSER( ETYPE_MPEG_TS, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MPEG_TS, _get_info_FFMPEG );
+#endif
+#endif
+
+#ifdef CONFIG_WTV
+STREAM_REGISTER_PARSER( ETYPE_WTV, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_WTV, _get_info_FFMPEG );
+#endif
+
+#ifdef CONFIG_OGV
+STREAM_REGISTER_PARSER( ETYPE_OGV, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_OGV, _get_info_FFMPEG );
+#endif
+
+#ifdef CONFIG_FLV
+STREAM_REGISTER_PARSER( ETYPE_FLV, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_FLV, _get_info_FFMPEG );
+#endif
+
+STREAM_REGISTER_PARSER( ETYPE_AMV, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_AMV, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_AC3, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_AC3, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_H264_RAW, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_H264_RAW, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MPG4_RAW, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MPG4_RAW, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MPEG_PS, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MPEG_PS, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MPEG_RAW, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MPEG_RAW, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_DTS, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_DTS, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MP3, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_MP3, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_AAC, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_AAC, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_FLAC, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_FLAC, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_WAVPACK, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_WAVPACK, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_TTA, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_TTA, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_OGG, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_AUD, ETYPE_OGG, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_ASF, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_ASF, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_AVI, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_AVI, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MP4, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MP4, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_MKV, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_MKV, _get_info_FFMPEG );
+
+STREAM_REGISTER_PARSER( ETYPE_RM, stream_parser_FFMPEG );
+FILE_INFO_REGISTER_URL( TYPE_VID, ETYPE_RM, _get_info_FFMPEG );
+
+#ifdef DEBUG_MSG
+static STREAM_REG_PARSER reg_avi = {
+	ETYPE_AVI,
+	&stream_parser_FFMPEG,
+};
+
+static STREAM_REG_PARSER reg_asf = {
+	ETYPE_ASF,
+	&stream_parser_FFMPEG,
+};
+
+static STREAM_REG_PARSER reg_mkv = {
+	ETYPE_MKV,
+	&stream_parser_FFMPEG,
+};
+
+static STREAM_REG_PARSER reg_ts = {
+	ETYPE_MPEG_TS,
+	&stream_parser_FFMPEG,
+};
+
+static STREAM_REG_PARSER reg_ps = {
+	ETYPE_MPEG_PS,
+	&stream_parser_FFMPEG,
+};
+
+static STREAM_REG_PARSER reg_mp4 = {
+	ETYPE_MP4,
+	&stream_parser_FFMPEG,
+};
+
+static FILE_INFO_REG fi_mkv = {
+	.type = TYPE_VID,
+	.etype = ETYPE_MKV,
+	.info_url = _get_info_FFMPEG,
+	.info_url_name = "_get_info_FFMPEG",
+};
+
+static FILE_INFO_REG fi_ogg = {
+	.type = TYPE_VID,
+	.etype = ETYPE_OGG,
+	.info_url = _get_info_FFMPEG,
+	.info_url_name = "_get_info_FFMPEG",
+};
+
+static void _reg_ff( void ) 
+{
+serprintf("register lavf for AVI\r\n");
+	stream_unregister_parser( ETYPE_AVI );
+	stream_register_parser( &reg_avi );
+
+serprintf("register lavf for ASF\r\n");
+	stream_unregister_parser( ETYPE_ASF );
+	stream_register_parser( &reg_asf );
+
+serprintf("register lavf for MKV\r\n");
+	stream_unregister_parser( ETYPE_MKV );
+	stream_register_parser( &reg_mkv );
+
+serprintf("register lavf for MKV info\r\n");
+	file_info_unregister( TYPE_VID, ETYPE_MKV );
+	file_info_register( &fi_mkv );
+
+serprintf("register lavf for TS\r\n");
+	stream_unregister_parser( ETYPE_MPEG_TS );
+	stream_register_parser( &reg_ts );
+	
+serprintf("register lavf for PS\r\n");
+	stream_unregister_parser( ETYPE_MPEG_PS );
+	stream_register_parser( &reg_ps );
+
+serprintf("register lavf for MP4\r\n");
+	stream_unregister_parser( ETYPE_MP4 );
+	stream_register_parser( &reg_mp4 );
+
+serprintf("register lavf for OGG info\r\n");
+	file_info_unregister( TYPE_VID, ETYPE_OGG );
+	file_info_register( &fi_ogg );
+
+}
+
+DECLARE_DEBUG_COMMAND_VOID( "regff", 	_reg_ff );
+#endif
+
+#endif	// CONFIG_FFMPEG_PARSER
+#endif

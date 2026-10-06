@@ -1,0 +1,794 @@
+# Audio Speed Architecture with atempo Filter
+
+## Overview
+
+This document describes the audio speed control implementation using FFmpeg's `atempo` filter. The architecture maintains timeline mapping for timestamp synchronization while using software-based audio resampling instead of AudioTrack PlaybackParams API.
+
+When the audio-speed feature is enabled and the selected speed backend is not
+AudioTrack PlaybackParams, the atempo filter is part of the steady PCM audio
+pipeline even at exactly 1.0x. Keeping the neutral filter hot avoids a pipeline
+discontinuity when the user changes speed while playback is running.
+
+### MediaCodec Audio Exclusion
+
+This architecture does not apply when MediaCodec is the active audio decoder.
+Although `atempo` runs in software after decoding, it still depends on the
+decoder supplying PCM fast enough for the requested rate. Some vendor
+MediaCodec audio implementations remain near 1.0x; at faster rates this starves
+`atempo` and AudioTrack, stalls the heard clock, and can leave video waiting.
+AVOS therefore rejects every non-1.0 speed request while MediaCodec audio
+decoding is active. This restriction concerns MediaCodec audio decoding, not
+MediaCodec video presentation scheduling. See
+`doc/mediacodec_audio_decoder.md`.
+
+## Current State (2026-09-17)
+
+The current implementation uses the atempo path as a software speed backend with
+three separate clocks/anchors:
+
+- **TS clock:** atempo output samples are already time-scaled, so the live
+  `audio_time` / heard clock advances 1:1 with emitted output duration.
+- **Output ledger:** every atempo PCM block written to AudioTrack is recorded in
+  an output-frame ledger keyed by cumulative AudioTrack written frames. The
+  ledger lets the sync path map the current AudioTrack playhead back to the TS
+  sample currently audible.
+- **Media/RST anchor:** speed commits need an RST anchor for
+  `timeline_map_apply()`. The old `TS_TO_RST_TIME(anchor_ts)` projection used the
+  pre-step committed speed and accumulated error across ramps. The current fix
+  stores a media/RST span per ledger block and uses that ledger RST for the
+  first `timeline_map_apply()` argument when the playhead resolves strictly
+  inside a ledger block.
+
+Speed changes are no longer committed to the video side immediately. The atempo
+target is published by the control thread. The audio thread applies the tempo
+command at its next filter call, but
+`timeline_map_apply()`, `set_playback_speed()`, and the video-sink re-anchor are
+deferred until the AudioTrack playhead crosses the output-frame boundary where
+the new-speed content is audible. Pending speed commits are queued and promoted
+in order.
+
+### Option B Current, Option A Fallback
+
+**Option A (fallback):** media/RST spans are sampled at AudioTrack-write time
+from the patched atempo state (`ns_in - ring`). This fixed the accumulating ramp
+desync in stress logs, including seek/pause reset cases, by preventing the
+stale-speed RST projection from being used at commit time.
+
+Option A's caveat is that write-time sampling includes variable wrapper-FIFO
+lead between filter output production and AudioTrack write. This is why it is no
+longer the primary source when the production map can resolve a block.
+
+**Option B (primary):** media/RST assignment happens in
+`stream_filter_audio_atempo.c` at output-production time. The atempo wrapper
+keeps an output-position to media/RST map keyed by cumulative atempo output
+frames. Each drained output burst records the media span produced from the
+patched v2 accessor's published media frontier. This frontier advances only
+when FFmpeg delivers an output frame; it excludes the partially filled internal
+output buffer. The first burst starts at media position zero in each graph
+epoch. The AVOS ledger queries the exact range of each write within the buffer
+returned by the wrapper, including its offset after previous or partial writes. If the map misses, the code
+falls back to Option A; if Option A cannot read state, it falls back to the 1:1
+TS slope.
+
+Both Option A and Option B depend on the local FFmpeg patch
+`native/ffmpeg-android-builder/atempo.patch`, which exposes atempo's internal
+WSOLA state and the published output media frontier. With an older patch that
+lacks the v2 accessor, production mapping uses `ns_in - ring` as an estimate.
+The edited source lives in `ext/ffmpeg/libavfilter/af_atempo.c`; regenerate the
+patch from that tree and rebuild the FFmpeg libraries before deploying these
+changes. The AVOS build alone uses the existing prebuilt FFmpeg libraries.
+A stock-FFmpeg strategy
+would require a less precise tempo-schedule estimate or proper filter PTS
+ownership and is a separate design goal.
+
+### Buffered MediaCodec video across speed changes
+
+The FFmpeg parser retains original video media/RST timestamps alongside the TS
+values used by the engine. The MediaCodec (`sfdec2`) path submits and reorders
+RST timestamps, retains them on decoded frames, and remaps pending frames when
+they leave the engine display queue and each time the renderer peeks its queue.
+A frame buffered before a speed commit therefore uses the new mapping when it
+is scheduled, including when returning to 1x.
+
+`videosink_put_time()` adopts one coherent committed timeline snapshot under the
+renderer lock, together with its audio anchor and snap cadence. Requested filter
+speed does not reset the renderer while old-speed audio remains queued. Cadence
+uses the committed ratio directly, including Sonic's blended ratios; a decoder
+speed callback only forwards the platform hint. Mapping changes wake a waiting
+renderer and invalidate calculations made before it dropped the queue lock.
+This applies to atempo, Sonic and AudioTrack PlaybackParams with MediaCodec video.
+During ordinary PCM speed commits, an established audio-based renderer wall
+anchor is preserved: TS still advances at wall-clock rate, while the new
+mapping changes the media rate. This avoids copying burst-sized variations in
+audio presentation samples into video deadlines on every speed step. The
+renderer still adopts the new mapping/cadence, invalidates calculations made
+while unlocked, and wakes to remap pending frames. Seek, startup, missing/static
+anchors, resume and hard clock discontinuities retain their reanchor behavior.
+A speed commit during resume does not consume the pending first-write clock
+correction. This policy does not alter passthrough clock handling.
+
+Software video decoders retain their existing timestamp handling. Frames already
+released to the Android compositor cannot be rescheduled by this change.
+
+### Why the atempo ledger exists
+
+The atempo filter does not transform audio in a strict one-input-frame to
+one-output-frame way. It uses an internal bounded ring buffer to perform
+time-stretching while preserving pitch, so after a speed change some audio may
+already be transformed, some may still be buffered by atempo, and some may
+already be written to AudioTrack but not yet audible.
+
+To keep video synchronized with what the user actually hears, AVOS keeps an
+output ledger that maps atempo-produced samples back to their media position.
+Video and timeline speed commits are then gated on the AudioTrack playhead
+reaching the matching output boundary, rather than on when the speed request was
+made or when samples were merely written.
+
+This avoids accumulated drift during speed ramps because the video timeline
+switches at the audible audio boundary, not at an earlier internal processing
+boundary.
+
+## Design Principles
+
+### Core Philosophy
+
+The implementation replaces AudioTrack PlaybackParams with FFmpeg atempo filter while preserving the original time domain architecture:
+
+1. **Timeline mapping enabled:** Parser scales all timestamps from RST → TS domain
+2. **Software audio resampling:** atempo physically changes audio duration to match playback speed
+3. **AudioTrack plays at 1.0x:** No PlaybackParams, no buffer scaling
+4. **Domain equivalence:** atempo output duration equals TS domain time
+
+### Hot atempo at 1.0x
+
+There are two separate questions:
+
+- **Filter topology:** if software speed is active, keep atempo in the PCM
+  chain at 1.0x so speed changes up or down can be applied without rebuilding
+  the audio path or creating an audible discontinuity.
+- **Delay accounting:** exact 1.0x may still be treated as neutral for
+  synthetic atempo-delay compensation. A hot neutral filter is not the same as
+  an active speed transform, and the sync model must not invent extra heard
+  latency when the physical output clock is already represented by committed
+  samples.
+
+AudioTrack PlaybackParams is the exception. If the device path is explicitly
+using AudioTrack-based speed, atempo is not the active speed backend. Passthrough
+and AC3 recoding are also excluded from atempo sample filtering because they do
+not send ordinary PCM samples through the software tempo chain.
+
+### Why atempo with Timeline Mapping
+
+**The fundamental relationship:** `Δts = Δwc` (time-scaled duration equals wall clock duration)
+
+With timeline mapping at speed S:
+- Parser scales timestamps: `ts = rst / S`
+- atempo changes physical duration: `physical_duration = rst / S`
+- AudioTrack @ 1.0x plays for `physical_duration` wall clock time
+- `Δwc = physical_duration = rst / S = ts`
+- **`Δts = Δwc`** → synchronization maintained ✓
+
+## Time Domains
+
+There are three fundamental time domains:
+
+### `wc` (Wall Clock)
+The system's monotonic clock (`clock_gettime()`). Ground truth for real-world time progression.
+
+### `rst` (Real Stream Time)
+Original media timeline (e.g., 0 to 10 minutes). Used for:
+- UI display and seeking
+- File metadata (duration, start_time)
+- User-facing position information
+
+### `ts` (Time-Scaled)
+**Primary internal time domain** for player logic. Created by parser scaling:
+- `ts = rst / audio_speed`
+- At 2.0x speed: 60s RST → 30s TS
+- All core variables (`s->video_time`, `frame->time`) use this domain
+
+### Key Relationship
+
+**Absolute time conversions** (maintain continuity via anchors):
+- `RST_TO_TS_TIME(time)` - Convert timestamp using current anchor
+- `TS_TO_RST_TIME(time)` - Convert back to RST
+
+**Duration conversions** (pure scaling, no anchors):
+- `RST_TO_TS_DELTA(duration)` - Scale duration by `1 / speed`
+- `TS_TO_RST_DELTA(duration)` - Scale duration by `speed`
+
+### Domain Equivalence: ts ≡ wc
+
+**Mathematical proof:**
+1. By definition: `Δwc = Δrst / audio_speed` (wall clock elapsed)
+2. By definition: `Δts = Δrst / audio_speed` (parser scaling)
+3. Therefore: **`Δts = Δwc`** (numerically equal)
+
+This equivalence means:
+- 100ms in TS domain = 100ms in wall clock
+- Video sink can mix TS and WC in calculations
+- `venc_time` (WC) can be compared to `blit_time` (TS)
+
+## atempo Filter Architecture
+
+### Method Comparison
+
+| Aspect | AudioTrack PlaybackParams (Old) | atempo Filter (Current) |
+|--------|--------------------------------|-------------------------|
+| Audio duration | Unchanged samples | Changed by atempo |
+| AudioTrack rate | S× | 1.0× |
+| Timeline mapping | Enabled | **Enabled** |
+| Buffer scaling | 2× for 2.0x support | 1× (normal) |
+| Android API | 23+ (Marshmallow) | All versions |
+| Quality | Hardware-dependent | Consistent (WSOLA) |
+
+### Data Flow at 1.5x Speed
+
+**Audio Path:**
+```
+File: 1000ms RST
+  ↓
+Parser: RST_TO_TS_TIME → 667ms TS
+  ↓
+Decoder: outputs 1000ms of PCM samples (timestamp: 667ms TS)
+  ↓
+atempo filter: 1000ms samples → 667ms samples (physical)
+  ↓
+AudioTrack @ 1.0x: plays for 667ms wall clock
+  ↓
+audio_time += 667ms TS (NO RST_TO_TS_DELTA scaling!)
+```
+
+**Video Path:**
+```
+File: 1000ms RST
+  ↓
+Parser: RST_TO_TS_TIME → 667ms TS
+  ↓
+Decoder: frame timestamp = 667ms TS
+  ↓
+Video sink: blit_time = 667ms TS
+  ↓
+Display: waits for 667ms wall clock
+```
+
+**Result:** Audio 667ms TS, video 667ms TS → **perfect sync** ✓
+
+### Critical Implementation Detail: Audio Time Accounting
+
+The key to synchronization is avoiding **double-scaling**:
+
+**WRONG (without atempo awareness):**
+```c
+// Decoded 1000ms of samples
+// atempo outputs 667ms of samples
+int output_time_ms = 667;  // physical duration
+audio_time += RST_TO_TS_DELTA(667);  // = 667 / 1.5 = 445ms ❌ WRONG!
+```
+
+**CORRECT (with atempo awareness):**
+```c
+// atempo output samples are already in TS domain (physical time)
+int output_time_ms = 667;  // physical duration = TS domain
+audio_time += output_time_ms;  // = 667ms ✓ CORRECT!
+```
+
+## Implementation Details
+
+### 1. Timeline Mapping and Deferred Video Commit (`stream.c`)
+
+When speed changes:
+
+The control thread publishes the clamped target speed (0.5x–2.0x). It does not
+inspect the live FIFO or create a commit from a potentially stale write cursor.
+On the audio thread:
+
+1. The wrapper applies the tempo command successfully. FFmpeg publishes any
+   partially filled old-tempo output buffer before updating the WSOLA origin;
+   its input ring and overlap history remain intact.
+2. The wrapper collects that old output and records the new tempo boundary as
+   `wrapper_read_cursor + fifo_samples`.
+3. Before the next PCM write, after manual-delay silence, the writer translates
+   that boundary into AudioTrack frame space using the current write's wrapper
+   offset and the sink ledger cursor. PCM already returned by an earlier filter
+   call has finished writing before the command is applied.
+4. The audio thread queues the accepted speed and translated boundary. Requests
+   superseded before the filter sees them do not create phantom commits.
+
+Backends without written-frame evidence use the existing deferred fallback.
+Manual-delay silence inserted before an outstanding boundary shifts that boundary
+with the media it labels. Pending pre-filter PCM also survives speed changes;
+returning to 1x finishes its batch together with the next decoded frame.
+Pending commits retain their three-second active-playback timeout across pause;
+resume shifts their timestamps by the pause duration without renewing elapsed
+waiting time. Queue exhaustion reports an error instead of dropping a transition.
+
+When the playhead crosses a queued boundary, `stream_atempo_commit_poll()`:
+
+1. obtains one presentation observation for the boundary and both clocks;
+2. subtracts calibrated post-playhead latency for mixer-playhead evidence and
+   resolves TS and RST at that same adjusted position;
+3. uses the ledger media/RST value as the first `timeline_map_apply()` argument
+   when the lookup is strictly inside a ledger block (`state == 0`);
+4. falls back to `TS_TO_RST_TIME(anchor_ts)` if the ledger is unavailable,
+   stale, or extrapolated;
+5. updates `set_playback_speed()` and re-anchors the video sink to `anchor_ts`.
+
+**Key:** Timeline mapping is enabled, but the video-side commit is
+playhead-gated. This avoids committing video at the moment old-speed PCM is
+written to AudioTrack, which is earlier than when the user hears that content.
+
+### 2. Parser Timestamp Scaling (`stream_parser_ffmpeg.c`)
+
+Parser applies timeline mapping to all timestamps:
+
+```c
+// Video timestamps
+int video_time = GET_VIDEO_TS(packet->pts) - ff_p->start_time;
+return RST_TO_TS_TIME(video_time, int);
+
+// Audio timestamps
+int audio_time = GET_AUDIO_TS(packet->pts) - ff_p->start_time;
+return RST_TO_TS_TIME(audio_time, int);
+```
+
+### 3. Audio Time Accounting - Two Paths
+
+#### Path A: Non-SAMPLES Sync Mode (`stream_audio.c:488-527`)
+
+For timestamp-based sync:
+
+```c
+if (s->sync_mode != STREAM_SYNC_SAMPLES) {
+    if (!s->audio->vbr && audio_frame.size > 0) {
+        // Calculate time from FILTERED output (after atempo)
+        int bytes_per_sample = audio_frame.bits / 8;
+        int channels = audio_frame.channels;
+        int sample_rate = audio_frame.samplesPerSec;
+
+        int output_samples = audio_frame.size / (bytes_per_sample * channels);
+        int output_time_ms = (output_samples * 1000) / sample_rate;
+
+        // Check if atempo is active
+        int using_atempo = (s->audio_filter_atempo != NULL);
+        if (using_atempo) {
+            // atempo output = physical samples @ 1.0x = TS domain
+            _add_audio_time(s, output_time_ms);
+        } else {
+            // Normal: samples in RST domain need scaling
+            _add_audio_time(s, RST_TO_TS_DELTA(output_time_ms, int));
+        }
+    }
+}
+```
+
+#### Path B: SAMPLES Sync Mode
+
+For sample-count-based sync, advance from logical media samples represented by
+the committed output. This is used by direct Mode 2 compressed passthrough and
+other paths where logical duration is more trustworthy than packet PTS. Mode 1
+IEC uses its carrier-byte/container-rate accounting instead. Compressed
+passthrough does not run through atempo.
+
+```c
+if (s->sync_mode == STREAM_SYNC_SAMPLES && s->audio_ref_time != -1) {
+    logical_samples = logical_samples_for_committed_output(frame, size_written);
+    s->audio_samples += logical_samples;
+    delta_ms = 1000 * s->audio_samples / logical_sample_rate;
+    _set_audio_time(s, s->audio_ref_time + RST_TO_TS_DELTA(delta_ms, int));
+}
+```
+
+For direct Mode 2, the same committed logical duration also feeds the paired
+compressed-byte/logical-sample latency normalization. It must not be inferred
+from AudioTrack compressed byte/frame counters.
+
+**Critical fix:** This second path (SAMPLES mode) was the source of A/V desync. The `size_written` value is the FILTERED output size (after atempo), which represents physical playback time. Applying `RST_TO_TS_DELTA` caused **double-scaling**.
+
+### 4. Filter Processing Order (`stream_audio.c:378-383`)
+
+Filters applied in sequence:
+
+```c
+// 1. atempo - FIRST (changes audio duration)
+if (s->audio_filter_atempo && audio_frame.size > 0) {
+    s->audio_filter_atempo->filter(s->audio_filter_atempo, &audio_frame);
+}
+
+// 2. compress - dynamic range compression (preserves duration)
+if (run_filter && s->audio_filter_compress) {
+    s->audio_filter_compress->filter(s->audio_filter_compress, &audio_frame);
+}
+
+// 3. ac3 - AC3 encoding if needed (preserves duration)
+// 4. jni - JNI passthrough (preserves duration)
+```
+
+**Rationale:** atempo MUST be first because it changes `audio_frame.size`. All subsequent time calculations depend on this filtered size.
+
+### 5. AudioTrack Configuration (`audio_interface_audiotrack_java.c`)
+
+#### Buffer Size (`lines 561-568`):
+
+```c
+int using_atempo = audio_interface_is_using_atempo();
+if (is_audio_speed_enabled && !using_atempo && ...) {
+    buffer_scale = 2;  // Only for PlaybackParams method
+} else {
+    buffer_scale = 1;  // atempo always uses normal buffers
+}
+```
+
+#### PlaybackParams (`lines 740-742`):
+
+```c
+// Skip PlaybackParams when using atempo (speed handled by PCM resampling)
+if (!failed && is_audio_speed_enabled && !using_atempo && ...) {
+    // Set AudioTrack playback rate only for legacy method
+}
+```
+
+### 6. Atempo Output Ledger and Heard Clock (`stream_audio.c`, `stream_sync.c`)
+
+The atempo path does not rely on `last_good_delay_ms` as the primary authority
+during software speed changes. Instead:
+
+- `stream_audio.c` reserves a ledger entry before each atempo PCM write and
+  finalizes/cancels it after `AudioTrack.write()` returns.
+- Each entry records:
+  - output-frame start,
+  - TS block start,
+  - block frame count/rate,
+  - media/RST start and span.
+- The media/RST span normally comes from the Option B production map in
+  `stream_filter_audio_atempo.c`, keyed by the wrapper output-sample index. The
+  stream ledger queries `[buffer_start + written_offset, buffer_start +
+  written_offset + requested_frames)`. Positive partial writes finalize only the
+  accepted prefix using a fresh map lookup; zero/retry writes cancel the
+  reservation. Endpoint interpolation keeps partitioned media sample counts
+  additive across split writes.
+- If the production map does not cover the full range, the ledger falls back to
+  the Option A live `ns_in - ring` delta sampled at reserve time; a final 1:1
+  TS-slope fallback keeps the clock progressing if the patched state is
+  unavailable.
+- `stream_sync.c` looks up the current AudioTrack presented frame in this ledger
+  to compute the heard TS. Timestamp-based presented frames are treated as
+  DAC-position evidence; playback-head evidence uses a calibrated post-playhead
+  latency.
+- The same ledger exposes media/RST interpolation for deferred speed commits.
+
+The TS side of the ledger advances 1:1 with emitted atempo output. Do not
+multiply the live heard clock by tempo; `ns_in/ns_out ~= tempo` is expected
+because `ns_in` is RST/media and the heard clock is TS.
+
+### 7. A/V Sync Delay Compensation (`stream_sync.c`)
+
+atempo introduces processing delay that must be added to A/V sync calculation:
+
+```c
+if (s->audio_filter_atempo && s->audio_filter_atempo->delay) {
+    filter_delay += s->audio_filter_atempo->delay(s->audio_filter_atempo);
+}
+```
+
+Delay calculation (in `stream_filter_audio_atempo.c`):
+
+```c
+// Fragment size (power of 2, closest to sample_rate/24)
+int fragment_size = 1 << log2_ceil(sample_rate / 24);
+
+// atempo uses ~2.5 fragments for WSOLA overlap
+int atempo_delay_samples = fragment_size * 2.5;
+int atempo_delay_ms = (atempo_delay_samples * 1000) / sample_rate;
+
+// Scale by speed for real-world time
+return (int)(atempo_delay_ms / current_speed);
+```
+
+Example at 48 kHz, 1.5x speed:
+- fragment_size = 2048 samples
+- atempo_delay = 5120 samples = 107ms
+- real_delay = 107 / 1.5 = ~71ms
+
+## atempo Filter Implementation
+
+### FFmpeg Filter Graph
+
+```
+abuffer → aformat(float) → atempo → aformat(native PCM) → abuffersink
+```
+
+**abuffer (input):**
+- Receives decoded PCM frames
+- Config: sample_rate, channel_layout, sample_format
+
+**atempo:**
+- Config: `tempo=<speed>` (one atempo instance)
+- AVOS configured range: 0.5 to 2.0
+- Overall support: 0.5x to 2.0x
+- Algorithm: WSOLA (Waveform Similarity Overlap-Add)
+
+**abuffersink (output):**
+- Extracts filtered frames
+- Output goes to AVAudioFifo buffer
+
+### Speed Range
+
+**Supported:** 0.5x to 2.0x
+
+**Implementation:**
+- Single atempo filter, with requests clamped to 0.5x–2.0x
+- No automatic chaining is implemented
+- Covers typical use cases with high quality
+
+### Hot Filter at 1.0x
+
+```c
+// In stream_filter_audio_atempo.c:_filter()
+float speed = audio_interface_get_audio_speed();
+int speed_enabled = audio_interface_is_audio_speed_enabled();
+
+if (!speed_enabled || !ctx->filter_initialized) {
+    return 0;  // Bypass when audio-speed feature is disabled
+}
+```
+
+At 1.0x speed:
+- If audio-speed is enabled and software atempo is the selected backend, the
+  filter remains active at neutral tempo. This keeps the PCM filter topology
+  stable for seamless runtime speed changes.
+- If audio-speed is disabled, or AudioTrack PlaybackParams is the selected
+  backend, the filter is bypassed.
+- Passthrough and AC3-recoding routes do not use atempo filtering.
+
+Important: keeping atempo hot at 1.0x is a topology rule, not a requirement to
+count the full synthetic WSOLA delay in every 1.0x heard-time calculation. Delay
+selection may ignore atempo's neutral-speed internal delay while still counting
+atempo delay when `speed != 1.0x`.
+
+## Video Synchronization
+
+Once the software-speed ledger has calibrated the mixer playhead latency, both
+heard-time queries and speed-commit boundary lookups keep using that playhead
+for the output epoch. This avoids alternating a fresh AudioTimestamp with the
+calibrated fallback when the timestamp becomes older than 100ms during the
+normal two-second query interval. The calibration survives non-flushing pause
+and is cleared with the ledger on seek, output reset, or stop. Before calibration,
+the existing fresh-timestamp/fallback policy remains in effect. This policy is
+shared by atempo and Sonic; passthrough does not use the software-speed ledger.
+
+At 1.0x, playback-head calibration also accepts trusted live dynamic evidence
+carried alongside a selected last-good delay. That selection intentionally does
+not authorize renderer reanchoring, but must not prevent rebuilding calibration
+after seek. The existing four-sample, 250ms spacing and fresh-playhead checks
+remain in force; a last-good value alone does not qualify. Once calibrated,
+speed commits can follow the playback head between AudioTimestamp queries.
+
+PCM resume retains the shifted renderer clock through the first accepted write.
+A bounded residual correction uses a one-shot slew capped at 4ms per distinct
+video frame and 10% of its speed-adjusted duration (1ms fallback for unknown
+duration), rather than a scheduling jump. Cold-start correction remains at
+1ms per frame; larger discontinuities and missing anchors retain hard
+reanchoring. The correction includes any inserted manual audio delay, so
+smoothing it does not discard the intended A/V phase.
+
+### Video Sink Pacing (`codec_sfdec2.c`)
+
+Audio remains the master clock, but current `sfdec2` pacing is platform-timed
+rather than the former `blit_duration` feedback loop:
+
+```c
+heard_ts = fresh_put_time_or_stream_get_heard_audio_ts();
+render_offset_ns = monotonic_now_ns - heard_ts * 1000000;
+render_ts_ns = snap(frame_ts) + render_offset_ns + user_video_delay_ns;
+```
+
+**Why this works:**
+- `heard_ts` and frame timestamps are in TS.
+- `render_offset_ns` maps that TS timeline onto `CLOCK_MONOTONIC`.
+- Because `Δts = Δwc`, the offset remains valid at the active playback speed.
+- The video thread holds frames outside a 200ms submission lookahead and drops
+  frames already more than 200ms late; MediaCodec performs final presentation at
+  `render_ts_ns`.
+- At speed changes, the audio playhead/atempo ledger supplies the audible media
+  boundary and the scheduler reanchors explicitly rather than chasing each
+  write burst.
+
+## Seeking, Reset, and Speed Changes
+
+### Seeking (`_stream_seek_real`)
+
+1. UI provides seek target in **RST**
+2. Parser seeks to RST position in file
+3. Parser scales new timestamps to **TS** domain
+4. Playback resumes with correct TS values
+
+Timeline mapping anchors are re-established after seek completes. The seek
+flush destroys the atempo graph and clears its FIFO, production map, and pending
+wrapper boundary; the next PCM frame creates a fresh graph at the target speed.
+Sending EOF is not a reusable reset. Ordinary non-flushing pause preserves this
+state and any pending output.
+
+### Speed Changes (`stream_set_av_speed` + `stream_atempo_commit_poll`)
+
+1. Publish the requested target for the audio thread.
+2. After successful filter application, queue a video-side commit at the actual
+   new-tempo output boundary translated into sink frame space.
+3. Keep the video timeline and decoder playback speed at the previous committed
+   speed while old-speed content is still queued in AudioTrack.
+4. Promote queued commits in order when the playhead crosses each boundary.
+5. Anchor `timeline_map_apply()` with:
+   - `anchor_ts`: the current heard TS;
+   - `anchor_rst`: the ledger media/RST at the same audible playhead when
+     available (`state == 0`), otherwise a projection fallback.
+6. On seek/flush/reset, clear the ledger and collapse pending commits to the
+   latest target speed using a deferred sentinel. The fresh graph publishes a
+   replacement boundary in the new frame domain. Without new output evidence,
+   the existing timeout fallback remains available.
+
+### Concurrent reconfiguration and decoder recovery
+
+The native control queue serializes speed requests with seek and track changes.
+Audio-worker format changes also take the audio lifecycle writer lease; a speed
+command holds a reader lease while querying or changing the sink. The atempo
+context mutex separately protects graph/FIFO replacement against delay and ledger
+queries. These locks do not require pausing or flushing queued PCM for a speed
+change.
+
+`video_control_mutex` serializes decoder open/close with speed callbacks from both
+the control and audio threads. A replacement decoder receives the cached committed
+video speed; a later atempo commit updates that replacement under the same lock.
+Decoder cleanup precedes freeing sink-owned frames during recovery as on stop.
+
+### End of stream and filter failures
+
+At decoder EOF, any unfinished pre-filter PCM batch is fed through atempo before
+the graph receives EOF. The wrapper then drains WSOLA output and its FIFO in
+bounded PCM blocks through the normal filters, writer, ledger, and clock
+accounting. PCM completion also waits for submitted sink output before reporting
+`end()`, using presentation counters when available and a bounded delay-based
+wait otherwise.
+Drained output is not filtered through atempo a second time. The presentation
+wait continues polling pending speed commits after the final write. On successful
+terminal drain, remaining commits are completed before audio EOF is published,
+including on routes that provide only a delay estimate. Aborted or failed drains
+do not force a final speed commit.
+
+PCM format changes follow the same drain ordering without ending playback. The
+incoming decoded frame is retained while the previous pre-filter batch, atempo
+graph, and FIFO finish. Only then can the wrapper replace its graph. The sink
+waits for previously submitted PCM before changing geometry. Recreating an
+AudioTrack resets stream-side PlaybackParams checkpoints, delay history, and
+atempo ledger boundaries together; a recovered PCM write retries its unwritten
+suffix against that new epoch. Pending commits collapse to the latest deferred
+target, as on other output resets.
+
+Graph creation, runtime commands, FIFO operations, input submission, and output
+collection propagate failures. Failed frames are cleared and playback reports
+an audio error; unscaled input PCM is never written as if atempo succeeded.
+Runtime command failure does not rebuild and discard a live graph.
+
+## Time Domain Variable Reference
+
+| Variable | Domain | Description |
+|----------|--------|-------------|
+| `s->video_time` | TS | Current video playback time |
+| `s->audio_time` | TS | Current audio playback time |
+| `frame->time` | TS | Video frame timestamp |
+| `cdata->time` | TS | Parser chunk timestamp |
+| `frame->blit_time` | TS | Video frame presentation time (≡ WC) |
+| `venc_time` | WC | Video sink's wall-clock timer (≡ TS) |
+| `s->delay` | TS | Smoothed A/V difference |
+| `s->av_delay` | RST | User-configured A/V offset |
+| `s->duration` | RST | Total media duration |
+| `s->video->msPerFrame` | RST | Unscaled frame duration |
+| `stream_get_current_time()` | RST | Returns UI position (converts from TS) |
+| `stream_seek_time()` | RST | Accepts UI seek position |
+| `stream_seek_time_frame_accurate()` | RST+TS | Seek to RST keyframe, then drop to TS target |
+| `atempo_ledger_output_frames` | output frames | Cumulative AudioTrack-written frame cursor for atempo ledger |
+| `STREAM_ATEMPO_LEDGER_ENTRY.block_ts_start` | TS | TS timestamp of the output block |
+| `STREAM_ATEMPO_LEDGER_ENTRY.block_rst_start` | RST | Media/RST timestamp of the output block, used for speed commit anchors |
+
+## Performance Characteristics
+
+### CPU Usage
+- atempo filter: ~20-22% CPU
+- Comparable to AudioTrack Sonic algorithm
+- No significant overhead vs PlaybackParams
+
+### Latency
+- Additional latency: ~107ms at 48kHz (scaled by speed)
+- Properly compensated in A/V sync
+- Not perceptible in practice
+
+### Memory
+- FFmpeg filter graph: minimal
+- AVAudioFifo buffer: configurable
+- **No 2× AudioTrack buffer** (saves memory vs old method)
+
+## Advantages of atempo Implementation
+
+1. **Universal compatibility:** Works on all Android API levels
+2. **Consistent quality:** Software-based, not hardware-dependent
+3. **Memory efficient:** No buffer scaling required
+4. **Maintains architecture:** All existing timestamp logic remains valid
+5. **Clear domain separation:** RST → TS in parser, TS throughout pipeline
+6. **Correct math:** `Δts = Δwc` relationship preserved
+7. **Feature compatible:** Works with all sync modes, subtitle sync, etc.
+
+## Files Modified
+
+### New Files
+- `Source/stream_filter_audio_atempo.c` (~590 lines) - Complete atempo implementation
+
+### Modified Files
+- `Include/stream.h` - Added `audio_filter_atempo` member
+- `Include/audio_interface.h` - Added atempo detection and presented/written frame helpers
+- `Source/stream.c` - Playhead-gated atempo video-speed commit queue
+- `Source/stream_audio.c` - Audio time accounting and atempo output ledger
+- `Source/stream_filter_audio_atempo.c` - Atempo filter, output FIFO, and
+  production-time output-to-media map
+- `Source/stream_video.c` - Initialize atempo filter
+- `Source/stream_sync.c` - Atempo ledger heard clock and ledger RST lookup
+- `Source/audio_interface.c` - Atempo flag setter/getter
+- `Source/audio_interface_audiotrack_java.c` - Skip buffer scaling/PlaybackParams, expose presented/written frames
+- `codecs.mk` - Added to build system
+- `ext/ffmpeg/libavfilter/af_atempo.c` - Source for the local FFmpeg patch, including published media state and command-boundary output delivery
+
+## Debugging
+
+### Enable Debug Output
+
+In `Source/debug.c`:
+```c
+int Debug[DBG_MAX_ENTRIES] = {
+    [DBG_STREAM] = 2,  // Timeline mapping
+    [DBG_AUD] = 2,     // Audio time accounting
+    [DBG_SINK] = 2,    // Video sink pacing
+};
+```
+
+### Expected Log Output at 1.5x
+
+```
+stream_open_audio_filter: opened [atempo]
+at_ledger_arm: written=... playhead=... queued=... audio=... epoch_rst=...
+atempo_commit_arm: prev=1.000 target=1.500 boundary=... qlen=...
+at_ledger_omap: w_start=... nframes=... b_span_us=... a_span_us=... diff_us=...
+at_ledger: ledger_heard=... heard=... applied=1 playhead=... state=0 speed=1.500
+atempo_commit_apply: prev=1.000 speed=1.500 boundary=... crossed=1 anchor_ts=...
+atempo_rst_anchor: speed=1.500 anchor_rst_proj=... anchor_rst_ledger=... state=0 flipped=1
+```
+
+## Troubleshooting
+
+### A/V Desync
+1. Check both audio time accounting paths (non-SAMPLES and SAMPLES modes)
+2. Verify `using_atempo` check exists in both paths
+3. Confirm no `RST_TO_TS_DELTA` applied when `using_atempo` is true
+4. Check `atempo_commit_arm` / `atempo_commit_apply` ordering and that commits
+   usually log `atempo_rst_anchor ... state=0 flipped=1`
+5. Check `at_ledger_omap` during dense logging. Large differences from the live
+   Option A estimate are expected only around wrapper-FIFO lead; map misses
+   should remain rare and fall back cleanly.
+6. After seek/flush during a ramp, verify deferred sentinel commits do not drain
+   against an empty ledger
+7. Confirm the FFmpeg atempo patch is present when building this path
+
+### Audio Quality Issues
+1. Verify runtime tempo commands succeed without rebuilding the live graph
+2. Check sample format (S16, S32, or FLT)
+3. Ensure FIFO buffer is properly sized
+
+### No Speed Change
+1. Verify `audio_interface_is_audio_speed_enabled()` returns true
+2. Check `stream_set_av_speed()` is called
+3. Confirm atempo filter is initialized
+
+---
+
+**Document Version:** 2.0
+**Last Updated:** 2026-07-20
+**Implementation:** Timeline mapping + playhead-gated atempo commit + Option B production media map with Option A fallback
+**FFmpeg Version:** N7.1
+**Android API:** All versions supported

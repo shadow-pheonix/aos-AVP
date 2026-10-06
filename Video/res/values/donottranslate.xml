@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <string name="unknown_video_name">@string/unknown_track_name</string>
+
+    <string name="sponsor_url">https://home.courville.org/sponsor</string>
+
+    <string name="faq_url">https://home.courville.org/nova_video_player-faq/index.html</string>
+
+    <string name="tmdb_movie_title_url">https://www.themoviedb.org/movie/%1$s?language=%2$s</string>
+    <string name="tmdb_tvshow_title_url">https://www.themoviedb.org/tv/%1$s?language=%2$s</string>
+    <string name="tvdb_title_url">http://www.thetvdb.com/?tab=series&amp;id=%1$s&amp;language=%2$s</string>
+    <string name="action_resume">com.archos.mediacenter.video.action_resume</string>
+    <string name="action_recently_added">com.archos.mediacenter.video.action_recently_added</string>
+    <string name="action_recently_played">com.archos.mediacenter.video.action_recently_played</string>
+
+    <string name="subtitle_color_default">#ffffff</string>
+
+    <string name="save_delay_setting_pref_key">save_setting_pref_key</string>
+    <string name="save_audio_speed_setting_pref_key">save_audio_speed_setting_pref_key</string>
+    <string name="preferences_network_mobile_vpn_key">vpn_mobile</string>
+    <string name="reset_brightness_on_start_key">reset_brightness_on_start</string>
+    <string name="nfo_export_manual_prefkey">export_manual_prefkey</string>
+    <string name="rescrap_all_prefkey">rescrap_all_prefkey</string>
+    <string name="rescrap_all_movies_prefkey">rescrap_all_movies_prefkey</string>
+    <string name="rescrap_all_collections_prefkey">rescrap_all_collections_prefkey</string>
+    <string name="recreate_sort_titles_prefkey">recreate_sort_titles_prefkey</string>
+    <string name="db_export_manual_prefkey">db_export_manual_prefkey</string>
+    <string name="media_library_export_prefkey">media_library_export_prefkey</string>
+    <string name="media_library_import_prefkey">media_library_import_prefkey</string>
+
+    <string name="nova">Nova Video Player</string>
+
+    <string name="resolution_4k">4k</string>
+    // do not say p since it can be i too
+    <string name="resolution_1080p">1080</string>
+    <string name="resolution_720p">720</string>
+    <string name="resolution_SD">SD</string>
+    <string name="audio_7_1">7.1</string>
+    <string name="audio_5_1">5.1</string>
+    <string name="audio_2_0">2.0</string>
+
+    <string name="leanback_episode_SXEX_code">"S%1$02dE%2$02d"</string>
+    <string name="leanback_episode_details_for_general_list" comment="S01E05 - The Pager">"S%1$02dE%2$02d  -  %3$s"</string>
+    <string name="leanback_episode_name_for_season_list" comment="5. The Pager">"%1$d. %2$s"</string>
+    <string name="leanback_episode_name_for_browser_list" comment="The Wire - S01E05 - The Pager">"%1$s  -  S%2$02dE%3$02d  -  %4$s"</string>
+
+</resources>
