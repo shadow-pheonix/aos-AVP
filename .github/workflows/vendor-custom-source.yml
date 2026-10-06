@@ -280,12 +280,19 @@ jobs:
           Future upstream changes must be reviewed and merged deliberately into these vendored custom trees. They are not automatically overlaid or pulled into the custom build.
           EOF
 
-      - name: Initialize unchanged upstream dependencies
+      - name: Initialize pinned unchanged upstream dependencies
         shell: bash
         run: |
           set -euo pipefail
           git submodule sync --recursive
           git submodule update --init --recursive --jobs 4
+
+          # Match the exact FileCoreLibrary revision used by the already
+          # successful custom Nova build instead of inheriting the fork's
+          # newer/incompatible gitlink.
+          git -C FileCoreLibrary fetch origin a077bf38dd8bccc6dc4c277178b7d69a779f7f49
+          git -C FileCoreLibrary checkout --detach a077bf38dd8bccc6dc4c277178b7d69a779f7f49
+          git add FileCoreLibrary
 
       - name: Verify vendored paths and build
         shell: bash
