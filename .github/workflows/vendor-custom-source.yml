@@ -92,8 +92,6 @@ jobs:
           rsync -a --exclude='.git' /tmp/nova-vendor/avos/ native/avos/
 
           rm -rf custom-overrides
-          rm -f .github/workflows/nova.yml
-          rm -f .github/workflows/vendor-custom-source.yml
 
       - name: Point remaining submodules at official upstream repositories
         shell: bash
@@ -172,83 +170,6 @@ jobs:
             path = native/prebuilt/torrentd
             url = https://github.com/nova-video-player/prebuilt-torrentd.git
             branch = main
-          EOF
-
-      - name: Install direct-source custom CI
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > .github/workflows/nova-custom.yml <<'EOF'
-          name: Nova Custom APK
-
-          on:
-            push:
-              branches: [ "nova" ]
-              paths:
-                - "Video/**"
-                - "MediaLib/**"
-                - "native/avos/**"
-                - "FileCoreLibrary"
-                - "native/**"
-                - ".gitmodules"
-                - ".github/workflows/nova-custom.yml"
-            workflow_dispatch:
-
-          permissions:
-            contents: read
-
-          jobs:
-            build:
-              runs-on: ubuntu-latest
-              timeout-minutes: 45
-
-              steps:
-                - name: Checkout custom Nova source
-                  uses: actions/checkout@v4
-                  with:
-                    submodules: recursive
-
-                - name: Set up Java 17
-                  uses: actions/setup-java@v4
-                  with:
-                    java-version: "17"
-                    distribution: "temurin"
-
-                - name: Configure Android build environment
-                  shell: bash
-                  run: |
-                    echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-                    echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-
-                - name: Install build packages
-                  run: |
-                    sudo apt-get update || sudo apt-get update
-                    sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip git pkg-config
-
-                - name: Build universal debug APK
-                  run: |
-                    cd Video
-                    ./gradlew --no-daemon -Puniversal assembleNoamazonDebug
-
-                - name: Collect APK
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    mkdir -p artifacts
-                    APK="$(find Video/build/outputs/apk -type f -name '*.apk' | head -n 1)"
-                    test -n "$APK"
-                    cp "$APK" artifacts/Nova-Custom-debug.apk
-                    sha256sum artifacts/Nova-Custom-debug.apk | tee artifacts/SHA256.txt
-
-                - name: Upload APK
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: nova-custom-debug
-                    path: |
-                      artifacts/Nova-Custom-debug.apk
-                      artifacts/SHA256.txt
-                    if-no-files-found: error
-                    retention-days: 14
           EOF
 
       - name: Update source baseline
