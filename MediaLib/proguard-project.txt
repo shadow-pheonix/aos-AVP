@@ -1,0 +1,38 @@
+#### JNI-bound & project internal classes ####
+-keep class com.archos.medialib.** { *; }
+-keep class com.archos.mediaprovider.** { *; }
+-keep class com.archos.mediascraper.** { *; }
+
+#### TMDb / Trakt JSON entities (Gson/Retrofit reflection targets) ####
+# Match the libraries' consumer rules: preserve JSON model names and members
+# needed by reflective deserialization, while allowing R8 to shrink unused models.
+-keepnames class com.uwetrottmann.trakt5.entities.**
+-keepclassmembers class com.uwetrottmann.trakt5.entities.** {
+    <fields>;
+    <init>(...);
+}
+-keep class com.uwetrottmann.trakt5.enums.** { *; }
+-keepnames class com.uwetrottmann.tmdb2.entities.**
+-keepclassmembers class com.uwetrottmann.tmdb2.entities.** {
+    <fields>;
+    <init>(...);
+}
+-keep class com.uwetrottmann.tmdb2.enumerations.** { *; }
+
+#### Retrofit ####
+-keepattributes Signature,InnerClasses,EnclosingMethod
+-keepattributes RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations
+-keepclassmembers,allowshrinking,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
+}
+-if interface * { @retrofit2.http.* <methods>; }
+-keep,allowobfuscation interface <1>
+-dontwarn org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
+-dontwarn javax.annotation.**
+-dontwarn kotlin.Unit
+-dontwarn retrofit2.KotlinExtensions
+-dontwarn retrofit2.KotlinExtensions$*
+
+#### Jetty / UPnP ####
+-keep class org.eclipse.jetty.** { *; }
+-keep class org.jupnp.** { *; }
