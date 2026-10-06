@@ -1,0 +1,740 @@
+// Copyright 2017 Archos SA
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+#include <time.h>
+
+#ifdef __ANDROID_API__
+#undef __ANDROID_API__
+#define __ANDROID_API__ 21
+#endif
+
+#include <media/NdkMediaCodec.h>
+
+#include "sfdec_common.h"
+
+typedef struct sfdec_mediacodec sfdec_priv_t;
+#include "sfdec_priv.h"
+
+#define DBG if (0)
+
+#undef LOG
+#define LOG(fmt, ...) do { \
+    printf("%s: " fmt "\n", __FUNCTION__, ##__VA_ARGS__); \
+    fflush(stdout); \
+} while (0)
+
+static inline int64_t get_monotonic_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+
+struct sfdec_mediacodec
+{
+    ANativeWindow   *mNativeWindow;
+    AMediaFormat    *mFormat;
+    AMediaCodec     *mCodec;
+    sfdec_codec_t codec;
+    int32_t width;
+    int32_t height;
+    int32_t output_width, output_height;
+    int32_t output_crop_width, output_crop_height;
+    bool output_format_seen;
+    void *extradata;
+    size_t extradata_size;
+    int rotation;
+    bool started;
+    int flush;
+
+    // the CLOCK_MONOTONIC value when we started/resumed playback
+    int64_t start_monotonic;
+    // the 1st frame timestamp since starting/resumed playback
+    int64_t start_off;
+
+    int64_t last_off;
+    int64_t last_monotonic;
+
+    bool zero_anchor_on_start;
+    int video_frame_rate_den;
+    int video_frame_rate_num;
+    int playback_speed_den;
+    int playback_speed_num;
+    int n_late;
+    bool is_paused;
+    int64_t pause_start_monotonic;
+    int64_t last_reset_monotonic;
+};
+
+struct sfbuf
+{
+    size_t index;
+    bool released;
+    int64_t timestamp_us;
+};
+
+static void sfdec_destroy(sfdec_priv_t *sfdec);
+static ssize_t sfdec_send_input2(sfdec_priv_t *sfdec, void *data, size_t size, int64_t time_us, int is_sync_frame, int wait, int flag);
+
+#define CHECK(x) do { \
+    if (!(x)) { \
+        LOG("sfdec_init failed: %s", #x); \
+        sfdec_destroy(sfdec); \
+        return NULL; \
+    } \
+} while (0)
+#define CHECK_STATUS(err) CHECK((err) == AMEDIA_OK)
+
+static int init_renderer(sfdec_priv_t *sfdec)
+{
+    AMediaFormat *format = AMediaCodec_getOutputFormat(sfdec->mCodec);
+    if (!format)
+        return -1;
+    int32_t width = 0, height = 0;
+    int valid = AMediaFormat_getInt32(format, "width", &width) &&
+        AMediaFormat_getInt32(format, "height", &height) &&
+        width > 0 && height > 0 && width <= 16384 && height <= 16384;
+    int32_t left = 0, top = 0, right = 0, bottom = 0;
+    int crop_valid = valid &&
+        AMediaFormat_getInt32(format, "crop-left", &left) &&
+        AMediaFormat_getInt32(format, "crop-top", &top) &&
+        AMediaFormat_getInt32(format, "crop-right", &right) &&
+        AMediaFormat_getInt32(format, "crop-bottom", &bottom) &&
+        left >= 0 && top >= 0 && right >= left && bottom >= top &&
+        right < width && bottom < height;
+    int crop_width = crop_valid ? right - left + 1 : width;
+    int crop_height = crop_valid ? bottom - top + 1 : height;
+    AMediaFormat_delete(format);
+    if (!valid)
+        return -1;
+    // Keep the initial container geometry: some vendors report padded or
+    // otherwise inaccurate startup dimensions. A subsequent actual format
+    // change must nevertheless propagate, using validated visible crop bounds.
+    if (sfdec->output_format_seen &&
+        (width != sfdec->output_width || height != sfdec->output_height ||
+         crop_width != sfdec->output_crop_width || crop_height != sfdec->output_crop_height)) {
+        sfdec->width = crop_width;
+        sfdec->height = crop_height;
+    }
+    sfdec->output_width = width;
+    sfdec->output_height = height;
+    sfdec->output_crop_width = crop_width;
+    sfdec->output_crop_height = crop_height;
+    sfdec->output_format_seen = true;
+    return 0;
+}
+
+static int err_count;
+
+// Map FFmpeg AVCOL_TRC_* to Android COLOR_TRANSFER_*
+static int map_color_transfer(int color_trc)
+{
+    switch (color_trc) {
+    case 1:  /* AVCOL_TRC_BT709 */        return 3; /* COLOR_TRANSFER_SDR_VIDEO */
+    case 6:  /* AVCOL_TRC_SMPTE170M */    return 3; /* COLOR_TRANSFER_SDR_VIDEO */
+    case 7:  /* AVCOL_TRC_SMPTE240M */    return 3; /* COLOR_TRANSFER_SDR_VIDEO */
+    case 13: /* AVCOL_TRC_IEC61966_2_1 */ return 3; /* COLOR_TRANSFER_SDR_VIDEO (sRGB ~ BT.709) */
+    case 16: /* AVCOL_TRC_SMPTE2084 */    return 6; /* COLOR_TRANSFER_ST2084 (PQ/HDR10) */
+    case 18: /* AVCOL_TRC_ARIB_STD_B67 */ return 7; /* COLOR_TRANSFER_HLG */
+    default: return 0;
+    }
+}
+
+// Map FFmpeg AVCOL_PRI_* to Android COLOR_STANDARD_*
+static int map_color_standard(int color_primaries, int color_space)
+{
+    // Use primaries as primary signal, fall back to matrix
+    if (color_primaries == 9 /* AVCOL_PRI_BT2020 */ ||
+        color_space == 9 /* AVCOL_SPC_BT2020_NCL */ ||
+        color_space == 10 /* AVCOL_SPC_BT2020_CL */)
+        return 6; /* COLOR_STANDARD_BT2020 */
+    if (color_primaries == 1 /* AVCOL_PRI_BT709 */ ||
+        color_space == 1 /* AVCOL_SPC_BT709 */)
+        return 1; /* COLOR_STANDARD_BT709 */
+    if (color_primaries == 6 /* AVCOL_PRI_SMPTE170M */ ||
+        color_primaries == 5 /* AVCOL_PRI_BT470BG */ ||
+        color_space == 6 /* AVCOL_SPC_SMPTE170M */ ||
+        color_space == 5 /* AVCOL_SPC_BT470BG */)
+        return 4; /* COLOR_STANDARD_BT601_NTSC / BT601_PAL */
+    return 0;
+}
+
+// Map FFmpeg AVCOL_RANGE_* to Android COLOR_RANGE_*
+static int map_color_range(int color_range)
+{
+    switch (color_range) {
+    case 2: /* AVCOL_RANGE_JPEG */ return 1; /* COLOR_RANGE_FULL */
+    case 1: /* AVCOL_RANGE_MPEG */ return 2; /* COLOR_RANGE_LIMITED */
+    default: return 0;
+    }
+}
+
+static sfdec_priv_t *sfdec_init(sfdec_codec_t codec,
+            sfdec_flags_t flags,
+            int *width, int *height, int rotation,
+            int64_t duration_us, int input_size,
+            void *surface_handle,
+            void *extradata, size_t extradata_size,
+            int *pts_reorder,
+            int color_primaries, int color_trc, int color_space, int color_range,
+            const char* codec_name, int video_frame_rate_den, int video_frame_rate_num)
+{
+    media_status_t err;
+    const char *mime_type;
+    unsigned int nb_csd = 0;
+
+    mime_type = get_mimetype(codec);
+    if (!mime_type)
+        return NULL;
+
+    DBG LOG("(NdkMediaCodec): %s with extradata size %zu", mime_type, extradata_size);
+
+    sfdec_priv_t *sfdec = new sfdec_priv_t();
+    if (sfdec == NULL)
+        return NULL;
+
+    err_count = 0;
+    sfdec->codec = codec;
+    sfdec->rotation = rotation;
+    sfdec->width = *width;
+    sfdec->height = *height;
+    sfdec->extradata = extradata;
+    sfdec->extradata_size = extradata_size;
+    sfdec->mNativeWindow = (ANativeWindow *)surface_handle;
+    sfdec->start_off = 0;
+    sfdec->start_monotonic = 0;
+    sfdec->zero_anchor_on_start = false;
+    sfdec->video_frame_rate_den = video_frame_rate_den;
+    sfdec->video_frame_rate_num = video_frame_rate_num;
+    sfdec->playback_speed_den = 1;
+    sfdec->playback_speed_num = 1;
+
+    DBG LOG("sfdec->mCodec %p sfdec->mFormat %p", (void *)sfdec->mCodec, (void *)sfdec->mFormat);
+
+    if (codec_name) {
+        LOG("Grabbing codec by name %s", codec_name);
+        sfdec->mCodec = AMediaCodec_createCodecByName(codec_name);
+    } else {
+        LOG("Grabbing codec by type %s", mime_type);
+        sfdec->mCodec = AMediaCodec_createDecoderByType(mime_type);
+    }
+    CHECK(sfdec->mCodec != NULL);
+
+    sfdec->mFormat = AMediaFormat_new();
+    CHECK(sfdec->mFormat != NULL);
+
+    AMediaFormat_setString(sfdec->mFormat, "mime", mime_type);
+    if (duration_us > 0)
+        AMediaFormat_setInt64(sfdec->mFormat, "durationUs", duration_us);
+    AMediaFormat_setInt32(sfdec->mFormat, "width", sfdec->width);
+    AMediaFormat_setInt32(sfdec->mFormat, "height", sfdec->height);
+    if (input_size > 0)
+        AMediaFormat_setInt32(sfdec->mFormat, "max-input-size", input_size);
+
+    // "low-latency" is intended for camera/conference pipelines; leaving it off for local video playback to avoid vendor-specific modes.
+    // AMediaFormat_setInt32(sfdec->mFormat, "low-latency", 1);
+
+    // Playback speed hint = video fps * playback speed (ceil)
+    if (sfdec->video_frame_rate_den && sfdec->video_frame_rate_num) {
+        int64_t rate_num = (int64_t)sfdec->video_frame_rate_num * sfdec->playback_speed_num;
+        int64_t rate_den = (int64_t)sfdec->video_frame_rate_den * sfdec->playback_speed_den;
+        if (rate_den > 0) {
+            int operating_rate = (int)((rate_num + rate_den - 1) / rate_den);
+            if (operating_rate > 0)
+                AMediaFormat_setInt32(sfdec->mFormat, "operating-rate", operating_rate);
+        }
+    }
+
+    // Priority hint (0 = realtime priority)
+    AMediaFormat_setInt32(sfdec->mFormat, "priority", 0);
+
+    // Set color metadata for HDR/color space signaling
+    {
+        int android_transfer = map_color_transfer(color_trc);
+        int android_standard = map_color_standard(color_primaries, color_space);
+        int android_range = map_color_range(color_range);
+        if (android_transfer) {
+            AMediaFormat_setInt32(sfdec->mFormat, "color-transfer", android_transfer);
+            LOG("color-transfer: %d (from trc %d)", android_transfer, color_trc);
+        }
+        if (android_standard) {
+            AMediaFormat_setInt32(sfdec->mFormat, "color-standard", android_standard);
+            LOG("color-standard: %d (from pri %d spc %d)", android_standard, color_primaries, color_space);
+        }
+        if (android_range) {
+            AMediaFormat_setInt32(sfdec->mFormat, "color-range", android_range);
+            LOG("color-range: %d (from range %d)", android_range, color_range);
+        }
+        if ((flags & SFDEC_FLAG_TONEMAP_SDR) &&
+                (android_transfer == 6 /* ST2084/PQ */ || android_transfer == 7 /* HLG */)) {
+            // Keep the source HDR metadata intact and separately request SDR output.
+            // Android 12+ decoders that support tone mapping honor this during configure().
+            AMediaFormat_setInt32(sfdec->mFormat, "color-transfer-request", 3 /* COLOR_TRANSFER_SDR_VIDEO */);
+            LOG("requesting decoder HDR-to-SDR tone mapping (input transfer %d)", android_transfer);
+        }
+    }
+
+    err = AMediaCodec_configure(sfdec->mCodec, sfdec->mFormat, sfdec->mNativeWindow, NULL, 0);
+    CHECK_STATUS(err);
+
+    err = AMediaCodec_start(sfdec->mCodec);
+    CHECK_STATUS(err);
+    sfdec->started = true;
+    sfdec->flush = 1;
+    sfdec->is_paused = false;
+    sfdec->pause_start_monotonic = 0;
+    sfdec->last_reset_monotonic = get_monotonic_ns();
+
+    return sfdec;
+}
+
+#undef CHECK
+#undef CHECK_STATUS
+
+#define CHECK(x) do { \
+    if (!(x)) { \
+        LOG("%s failed: %s", __FUNCTION__, #x); \
+        return -1; \
+    } \
+} while (0)
+#define CHECK_STATUS(err) CHECK((err) == AMEDIA_OK)
+
+static void sfdec_destroy(sfdec_priv_t *sfdec)
+{
+    if (sfdec->mCodec != NULL)
+        AMediaCodec_delete(sfdec->mCodec);
+    if (sfdec->mFormat != NULL)
+        AMediaFormat_delete(sfdec->mFormat);
+    delete sfdec;
+}
+
+static int sfdec_start(sfdec_priv_t *sfdec)
+{
+    if (!sfdec->started) {
+        media_status_t err = AMediaCodec_start(sfdec->mCodec);
+        CHECK_STATUS(err);
+        sfdec->started = true;
+    }
+    return 0;
+}
+
+static int sfdec_stop(sfdec_priv_t *sfdec)
+{
+    if (sfdec->started) {
+        media_status_t err = AMediaCodec_stop(sfdec->mCodec);
+        CHECK_STATUS(err);
+        sfdec->started = false;
+        sfdec->start_off = 0;
+        sfdec->start_monotonic = 0;
+        sfdec->last_off = 0;
+        sfdec->last_monotonic = 0;
+        sfdec->n_late = 0;
+        sfdec->last_reset_monotonic = get_monotonic_ns();
+        sfdec->is_paused = false;
+        sfdec->pause_start_monotonic = 0;
+        sfdec->zero_anchor_on_start = false;
+    }
+    return 0;
+}
+
+static ssize_t sfdec_send_input(sfdec_priv_t *sfdec, void *data, size_t size, int64_t time_us, int is_sync_frame, int wait)
+{
+    return sfdec_send_input2(sfdec, data, size, time_us, is_sync_frame, wait, 0);
+}
+
+static ssize_t sfdec_send_input2(sfdec_priv_t *sfdec, void *data, size_t size, int64_t time_us, int is_sync_frame, int wait, int flag)
+{
+    ssize_t index;
+    media_status_t err;
+    size_t bufsize = 0;
+    uint8_t *buf = NULL;
+
+    if (sfdec->flush && !(flag & 2)) {
+        if (sfdec->extradata && (sfdec->codec == SFDEC_VIDEO_AVC ||
+            sfdec->codec == SFDEC_VIDEO_HEVC || sfdec->codec == SFDEC_VIDEO_WMV ||
+            sfdec->codec == SFDEC_VIDEO_DOLBY_VISION)) {
+            ssize_t config = sfdec_send_input2(sfdec, sfdec->extradata,
+                sfdec->extradata_size, 0, 0, 0, 2 /* codec config */);
+            if (config <= 0)
+                return config;
+        }
+        sfdec->flush = 0;
+    }
+
+    // Input calls must also be bounded so flush/close can quiesce the writer.
+    index = AMediaCodec_dequeueInputBuffer(sfdec->mCodec, wait ? 10000 : 0);
+    if (index == AMEDIACODEC_INFO_TRY_AGAIN_LATER)
+        return 0;
+    if (index < 0)
+        return -1;
+    buf = AMediaCodec_getInputBuffer(sfdec->mCodec, index, &bufsize);
+    if ((size && (!data || !buf)) || size > bufsize) {
+        LOG("invalid input buffer or access unit too large: %zu > %zu", size, bufsize);
+        // Do not split an access unit into ordinary packets. Recovery will
+        // flush/close the codec, reclaiming this dequeued input slot.
+        return -1;
+    }
+    if (size)
+        memcpy(buf, data, size);
+
+    DBG LOG("queueInputBuffer: index %zd size %zu time %lld flag %d\n",
+            index, size, (long long)time_us, flag);
+    err = AMediaCodec_queueInputBuffer(sfdec->mCodec,
+            index,
+            0,
+            size,
+            time_us,
+            flag);
+    CHECK_STATUS(err);
+
+    return size ? (ssize_t)size : 1;
+}
+
+static int sfdec_send_eos(sfdec_priv_t *sfdec)
+{
+    return sfdec_send_input2(sfdec, NULL, 0, 0, 0, 0, 4 /* EOS */);
+}
+
+static int sfdec_flush(sfdec_priv_t *sfdec)
+{
+    sfdec->flush = 1;
+    media_status_t err = AMediaCodec_flush(sfdec->mCodec);
+    CHECK_STATUS(err);
+    err_count = 0;
+    sfdec->start_off = 0;
+    sfdec->start_monotonic = 0;
+    sfdec->last_off = 0;
+    sfdec->last_monotonic = 0;
+    sfdec->n_late = 0;
+    sfdec->last_reset_monotonic = get_monotonic_ns();
+    sfdec->is_paused = false;
+    sfdec->pause_start_monotonic = 0;
+    sfdec->zero_anchor_on_start = false;
+
+    return 0;
+}
+
+static int sfdec_stop_input(sfdec_priv_t *sfdec)
+{
+    return 0;
+}
+
+static int sfdec_read(sfdec_priv_t *sfdec, int64_t seek, sfdec_read_out_t *read_out)
+{
+    static const int64_t DEQUEUE_TIMEOUT_US = 10000;
+    ssize_t index;
+
+    if (!read_out)
+        return -1;
+
+    read_out->flag = SFDEC_READ_INVALID;
+
+    for (;;) {
+        AMediaCodecBufferInfo info;
+        // A bounded dequeue lets seek/close wait until no MediaCodec call is in
+        // flight before flushing. Some vendor implementations corrupt their
+        // output-port state when flush interrupts an indefinite dequeue.
+        index = AMediaCodec_dequeueOutputBuffer(sfdec->mCodec, &info, DEQUEUE_TIMEOUT_US);
+
+        if (index >= 0) {
+            err_count = 0;
+            if (info.flags & 4) {
+                read_out->flag |= SFDEC_READ_EOS;
+                if (info.size == 0) {
+                    return AMediaCodec_releaseOutputBuffer(sfdec->mCodec, index, false) == AMEDIA_OK ? 0 : -1;
+                }
+            }
+            sfbuf_t *sfbuf = (sfbuf_t*) calloc(1, sizeof(sfbuf_t));
+            if (sfbuf == NULL) {
+                AMediaCodec_releaseOutputBuffer(sfdec->mCodec, index, false);
+                return -1;
+            }
+            sfbuf->index = index;
+            sfbuf->released = false;
+            sfbuf->timestamp_us = info.presentationTimeUs;
+            read_out->flag |= SFDEC_READ_BUF;
+            read_out->buf.sfbuf = sfbuf;
+            read_out->buf.time_us = info.presentationTimeUs;
+            DBG LOG("buf: %zd / time: %lld", index, (long long)info.presentationTimeUs);
+            return 0;
+        } else if (index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+
+	    // here we init renderer based on codec information that could be erroneous and yield to incorrect AR
+            if (init_renderer(sfdec))
+                continue;
+            read_out->flag |= SFDEC_READ_SIZE;
+            read_out->size.width = sfdec->width;
+            read_out->size.height = sfdec->height;
+            read_out->size.interlaced = 0;
+            LOG("INFO_FORMAT_CHANGED: %dx%d", sfdec->width, sfdec->height);
+            return 0;
+        } else if (index == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
+            DBG LOG("INFO_OUTPUT_BUFFERS_CHANGED");
+        } else if (index == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
+            DBG LOG("mCodec->dequeueOutputBuffer returned -EAGAIN");
+            return 0;
+        } else if (index == -10000) { // 0xFFFFD8F0 but works in 64b
+            if (sfdec->flush) {
+                LOG("mCodec->dequeueOutputBuffer returned -10000 while flushing IGNORE!");
+            	return 0;
+            } else {
+                LOG("mCodec->dequeueOutputBuffer returned -10000");
+                return -1;
+            }
+        } else {
+            err_count++;
+            LOG("mCodec->dequeueOutputBuffer returned: %zx", index);
+            if( err_count > 100 ) {
+                LOG("we had enough!");
+                return -1;
+            }
+            return 0;
+        }
+    }
+}
+
+static int sfdec_buf_render(sfdec_priv_t *sfdec, sfbuf_t *sfbuf, int render, int asap, int64_t render_ts_ns)
+{
+    media_status_t err;
+	if (!sfdec || !sfdec->mCodec || !sfbuf) {
+		LOG("sfdec_buf_render: invalid argument sfdec=%p codec=%p sfbuf=%p",
+			sfdec, sfdec ? sfdec->mCodec : NULL, sfbuf);
+		return -1;
+	}
+    if( render ) {
+        int64_t now_ns = get_monotonic_ns();
+        DBG LOG("sfdec_render: index=%zu ts_us=%lld render=%d asap=%d render_ts_ns=%lld start_off_ns=%lld start_mono_ns=%lld last_off_ns=%lld last_mono_ns=%lld now_ns=%lld reset_age_ms=%lld",
+            sfbuf ? sfbuf->index : (size_t)-1,
+            sfbuf ? (long long)sfbuf->timestamp_us : -1LL,
+            render, asap, (long long)render_ts_ns,
+            (long long)sfdec->start_off,
+            (long long)sfdec->start_monotonic,
+            (long long)sfdec->last_off,
+            (long long)sfdec->last_monotonic,
+            (long long)now_ns,
+            (long long)((sfdec->last_reset_monotonic > 0) ? ((now_ns - sfdec->last_reset_monotonic) / 1000000LL) : -1));
+        // The current sfdec2 path renders ASAP and no longer relies on libsfdec's
+        // internal timed-release scheduling. Keep the render_ts_ns / cadence-aware
+        // scheduling logic below intact for safekeeping and possible future reuse.
+        if (render_ts_ns > 0) {
+            err = AMediaCodec_releaseOutputBufferAtTime(sfdec->mCodec, sfbuf->index, render_ts_ns);
+            DBG LOG("sfdec_render_release: mode=at_time index=%zu when_ns=%lld", sfbuf->index, (long long)render_ts_ns);
+        } else if (asap) {
+            err = AMediaCodec_releaseOutputBuffer(sfdec->mCodec, sfbuf->index, true);
+            DBG LOG("sfdec_render_release: mode=asap index=%zu", sfbuf->index);
+        } else {
+            int64_t timestamp_ns = sfbuf->timestamp_us * 1000LL;
+            DBG LOG("Received og timestamp %lld us", (long long)sfbuf->timestamp_us);
+            if (sfdec->video_frame_rate_den) {
+                int rendering_frame_rate_num = sfdec->video_frame_rate_num * sfdec->playback_speed_num;
+                int rendering_frame_rate_den = sfdec->video_frame_rate_den * sfdec->playback_speed_den;
+                DBG LOG("Got rendering frame rate %d / %d", rendering_frame_rate_num, rendering_frame_rate_den);
+                // Add half a frame, so flooring almost exact match succeeds
+                double frame_length = rendering_frame_rate_num / ( (double)(rendering_frame_rate_den));
+                int64_t half_frame = (int64_t)( (1.0/2.0) * 1000000000.0 / frame_length );
+                int64_t tns = timestamp_ns + half_frame;
+
+                int n = (int)((double)timestamp_ns * frame_length / 1000000000.0 + 0.5);
+                int64_t tns_new = (int64_t)( n * 1000000000.0  / frame_length );
+                timestamp_ns = tns_new;
+                (void)tns; // keep static analyzers happy if half_frame unused
+            }
+
+
+            int64_t now_ts;
+
+            {
+                struct timespec now;
+                int ret = clock_gettime(CLOCK_MONOTONIC, &now);
+                now_ts = now.tv_sec * 1000000000LL + now.tv_nsec;
+            }
+
+            // Compute before adjustment the realtime timestamp to display the frame based on timestamp from codec, and the info we stored when we started
+            int64_t ts = timestamp_ns - sfdec->start_off + sfdec->start_monotonic;
+            int64_t delta = ts - now_ts;
+            bool fresh_start = !sfdec->start_off; //Got reset
+            bool long_gap = (now_ts - sfdec->last_monotonic) > 500*1000LL*1000LL; //If we had no frame since the last 500ms, user did pause/resume
+            bool big_delta = (delta < -500*1000LL*1000LL || delta > 500*1000LL*1000LL); // If distance between two frames is >500ms, that's a seek
+            bool recent_reset = (sfdec->last_reset_monotonic > 0 && (now_ts - sfdec->last_reset_monotonic) < 200 * 1000LL * 1000LL);
+            if (fresh_start || long_gap || big_delta || recent_reset) {
+                // On first start keep a small buffer; on resume/seek anchor immediately to avoid audio drift
+                int64_t anchor_delay = (fresh_start && !sfdec->zero_anchor_on_start) ? 100 * 1000LL * 1000LL : 0;
+                sfdec->start_monotonic = now_ts + anchor_delay;
+                sfdec->start_off = timestamp_ns;
+                sfdec->zero_anchor_on_start = false; // consumed on next anchor
+                // display first frame there asap
+                asap = 1;
+            }
+
+            // Drop policy thresholds
+            const int64_t DROP_THRESHOLD_NS = 50 * 1000 * 1000LL;   // 50ms
+            const int64_t LATE_THRESHOLD_NS = 5 * 1000 * 1000LL;    // 5ms
+
+            if (!asap) {
+                if (delta < -DROP_THRESHOLD_NS) {
+                    sfdec->n_late++;
+                    DBG LOG("Dropping frame: %lld ns late", (long long)(-delta));
+                    err = AMediaCodec_releaseOutputBuffer(sfdec->mCodec, sfbuf->index, false);
+                    CHECK_STATUS(err);
+                    sfbuf->released = true;
+                    return 0;
+                } else if (delta < -LATE_THRESHOLD_NS) {
+                    sfdec->n_late++;
+                    DBG LOG("Late frame (%lld ns), rendering ASAP", (long long)(-delta));
+                    asap = 1;
+                } else if (delta < 0) {
+                    sfdec->n_late++;
+                    sfdec->start_monotonic += 100 * 1000LL * 1000L; // Delay 100ms
+                    DBG LOG("Slightly late (%d), adjusting +100ms", sfdec->n_late);
+                } else {
+                    sfdec->n_late = 0;
+                }
+            }
+            // Compute the realtime timestamp to display the frame based on timestamp from codec, and the info we stored when we started
+            ts = timestamp_ns - sfdec->start_off + sfdec->start_monotonic;
+
+            if (asap) {
+                DBG LOG("Scheduling frame in a jiffy");
+            } else {
+                DBG LOG("Scheduling frame in %lld", (long long)(ts - now_ts));
+            }
+
+            sfdec->last_monotonic = now_ts;
+            sfdec->last_off = timestamp_ns;
+
+            if (asap)
+                err = AMediaCodec_releaseOutputBuffer(sfdec->mCodec, sfbuf->index, true);
+            else
+                err = AMediaCodec_releaseOutputBufferAtTime(sfdec->mCodec, sfbuf->index, ts);
+            DBG LOG("sfdec_render_release: mode=%s index=%zu target_ns=%lld delta_ns=%lld ts_ns=%lld",
+                asap ? "asap" : "scheduled",
+                sfbuf->index,
+                (long long)ts,
+                (long long)(ts - now_ts),
+                (long long)timestamp_ns);
+        }
+    } else {
+        err = AMediaCodec_releaseOutputBuffer(sfdec->mCodec, sfbuf->index, false);
+        DBG LOG("sfdec_render_release: mode=drop index=%zu", sfbuf ? sfbuf->index : (size_t)-1);
+    }
+    CHECK_STATUS(err);
+    sfbuf->released = true;
+    return 0;
+}
+
+static int sfdec_buf_release(sfdec_priv_t *sfdec, sfbuf_t *sfbuf)
+{
+    media_status_t err = AMEDIA_OK;
+    if (!sfbuf->released)
+        err = AMediaCodec_releaseOutputBuffer(sfdec->mCodec, sfbuf->index, false);
+    free(sfbuf);
+        
+    return err == AMEDIA_OK ? 0 : -1;
+}
+
+static int sfdec_buf_discard(sfdec_priv_t *sfdec, sfbuf_t *sfbuf)
+{
+    (void)sfdec;
+    free(sfbuf);
+    return 0;
+}
+
+static int sfdec_reset_ts(sfdec_priv_t *sfdec)
+{
+    sfdec->start_off = 0;
+    sfdec->start_monotonic = 0;
+    sfdec->last_off = 0;
+    sfdec->last_monotonic = 0;
+    sfdec->n_late = 0;
+    sfdec->last_reset_monotonic = get_monotonic_ns();
+    sfdec->is_paused = false;
+    sfdec->pause_start_monotonic = 0;
+    sfdec->zero_anchor_on_start = false;
+    return 0;
+}
+
+static int sfdec_set_playback_speed(sfdec_priv_t *sfdec, int den, int num) {
+    DBG LOG("Setting playbackspeed to %d / %d", num, den);
+    sfdec->playback_speed_den = den;
+    sfdec->playback_speed_num = num;
+    return 0;
+}
+
+static int sfdec_pause(sfdec_priv_t *sfdec)
+{
+    if (!sfdec->is_paused) {
+        sfdec->pause_start_monotonic = get_monotonic_ns();
+        sfdec->is_paused = true;
+    }
+    return 0;
+}
+
+static int sfdec_resume(sfdec_priv_t *sfdec)
+{
+    if (sfdec->is_paused) {
+        int64_t now = get_monotonic_ns();
+        // Reset anchors and request immediate (0ms) re-anchor on next frame after resume
+        sfdec->start_off = 0;
+        sfdec->start_monotonic = 0;
+        sfdec->last_off = 0;
+        sfdec->last_monotonic = 0;
+        sfdec->n_late = 0;
+        sfdec->last_reset_monotonic = now;
+        sfdec->zero_anchor_on_start = true;
+        sfdec->is_paused = false;
+        sfdec->pause_start_monotonic = 0;
+    }
+    return 0;
+}
+
+static int sfdec_seek_reset(sfdec_priv_t *sfdec)
+{
+    sfdec->start_off = 0;
+    sfdec->start_monotonic = 0;
+    sfdec->last_off = 0;
+    sfdec->last_monotonic = 0;
+    sfdec->n_late = 0;
+    sfdec->last_reset_monotonic = get_monotonic_ns();
+    sfdec->is_paused = false;
+    sfdec->pause_start_monotonic = 0;
+    sfdec->zero_anchor_on_start = false;
+    return 0;
+}
+
+
+sfdec_itf_t sfdec_itf_mediacodec = {
+    "MediaCodec",
+    sfdec_init,
+    sfdec_destroy,
+    sfdec_start,
+    sfdec_stop,
+    sfdec_send_input,
+    sfdec_flush,
+    sfdec_stop_input,
+    sfdec_read,
+    sfdec_buf_render,
+    sfdec_buf_release,
+    sfdec_reset_ts,
+    sfdec_set_playback_speed,
+    sfdec_pause,
+    sfdec_resume,
+    sfdec_seek_reset,
+    sfdec_buf_discard,
+    sfdec_send_eos,
+};

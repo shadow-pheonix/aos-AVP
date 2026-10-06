@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="preferences_export_diagnostics_title">Export diagnostics</string>
+    <string name="preferences_export_diagnostics_summary">Create a ZIP with Nova logs, crash details and basic device/app information for debugging</string>
+</resources>

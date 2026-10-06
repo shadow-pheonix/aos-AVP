@@ -1,0 +1,104 @@
+name: Nova Custom APK
+
+on:
+  push:
+    branches: [ "nova" ]
+    paths:
+      - "custom-overrides/**"
+      - "SOURCE_BASELINE.md"
+      - ".github/workflows/nova-custom.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout fork metadata and overrides
+        uses: actions/checkout@v4
+
+      - name: Configure Android build environment
+        shell: bash
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update || sudo apt-get update
+          sudo apt-get install -y nasm meson ninja-build maven build-essential wget curl unzip git pkg-config
+
+      - name: Install repo tool
+        run: |
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo | sudo tee /usr/local/bin/repo >/dev/null
+          sudo chmod a+x /usr/local/bin/repo
+
+      - name: Materialize recorded upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir buildtree
+          cd buildtree
+          repo init -u https://github.com/nova-video-player/aos-AVP -b nova -m v6_4.xml
+          repo sync -j 4
+          git -C Video checkout --detach cab25da088a28601795c795c9ad6375f2054f60a
+          git -C MediaLib checkout --detach 3e904a4e657c2abc9a6b12192a095d52714041b7
+          git -C native/avos checkout --detach c594ce3b4c8c2d1dc7e1dd050812801e2040560f
+
+      - name: Apply exact custom overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a "$GITHUB_WORKSPACE/custom-overrides/Video/." "$GITHUB_WORKSPACE/buildtree/Video/"
+          cp -a "$GITHUB_WORKSPACE/custom-overrides/MediaLib/." "$GITHUB_WORKSPACE/buildtree/MediaLib/"
+          cp -a "$GITHUB_WORKSPACE/custom-overrides/native/avos/." "$GITHUB_WORKSPACE/buildtree/native/avos/"
+
+      - name: Verify reconstructed component trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_tree() {
+            local repo="$1"
+            local expected="$2"
+            git -C "$repo" add -A
+            actual="$(git -C "$repo" write-tree)"
+            echo "$repo tree: $actual"
+            test "$actual" = "$expected"
+          }
+          verify_tree buildtree/Video 1bc28f7532b520658b1c6cf7482924a9ef121f8e
+          verify_tree buildtree/MediaLib 14bbdf89b76725df73b31116c0bf5eedeb83f650
+          verify_tree buildtree/native/avos 675e0e04707905a605797fc314181ccc363ca0c3
+
+      - name: Build universal debug APK
+        run: |
+          cd buildtree/Video
+          ./gradlew --no-daemon -Puniversal assembleNoamazonDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          APK="$(find buildtree/Video/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" artifacts/Nova-Custom-debug.apk
+          sha256sum artifacts/Nova-Custom-debug.apk | tee artifacts/SHA256.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-custom-debug
+          path: |
+            artifacts/Nova-Custom-debug.apk
+            artifacts/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
