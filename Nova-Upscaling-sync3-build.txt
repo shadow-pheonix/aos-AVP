@@ -1,0 +1,13 @@
+Nova Upscaling sync3 test build
+APK: Nova-Upscaling-sync3-debug.apk
+Version: 6.5.4-upscaling-sync3 (6050006)
+Package: org.courville.nova
+Source: a5208c8d6974ec00eb9735c64a4f4d26ff08caa9
+Source branch: upscaling-sync-2026-10-07
+Size: 102105876 bytes
+SHA-256: 61fd92c6a39583deb14bc2c221a5fd01f59f48675599f391e91be5bd005f7797
+Signing certificate SHA-256: 1741729a039d59de3611eca6f8064001f6da898a878e4ef61b98f8d0ff224bd7
+Universal debug APK: arm64-v8a, armeabi-v7a, x86, x86_64
+Verification: 56 selected tests passed; Android lint passed; headless GPU shader/graph checks passed; ZIP integrity and shader byte identity passed; all four ABI native dependencies resolved; APK signature verified.
+Device limitation: Galaxy Tab S9 A/V sync and FSRCNNX frame rate have not been verified on hardware. This is a targeted test update for the reported symptoms.
+Export logs using the existing Export diagnostics option.
