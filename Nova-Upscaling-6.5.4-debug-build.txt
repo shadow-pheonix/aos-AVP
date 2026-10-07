@@ -1,0 +1,19 @@
+Nova Upscaling test APK
+Build date: 2026-10-07 UTC
+Repository: /workspace/aos-AVP (nova branch, base 011c474 plus local upscaling changes)
+Published source snapshot: 174ff71e92888784f2368b032e19e5244219ac67
+Package: org.courville.nova
+Version: 6.5.4 (6050004)
+Variant: noamazonDebug, universal, debug signed
+Architectures: arm64-v8a, armeabi-v7a, x86, x86_64
+Android: API 23 minimum, target API 36, compile SDK 37
+Native toolchain: Android NDK r27c (27.2.12479018)
+Command: cd Video && ./gradlew -Puniversal assembleNoamazonDebug --no-daemon --max-workers=2
+Result: BUILD SUCCESSFUL, Android lint passed
+Verification: APK signatures v1/v2/v3 valid; ZIP integrity valid;
+all upscaling assets match source; 22 native libraries per ABI;
+all non-system ELF runtime dependencies included.
+SHA-256: 0e9e65ef7d9f5eb50664f8ed0aa01eff59a3f7aaf8cbc2d7ceb031fcf03c8ff4
+Limitations: no Android device attached; Tab S9 playback/visual validation pending.
+HDR inputs retain existing playback and bypass upscaling.
+This certificate will not update an installation signed by another key.
