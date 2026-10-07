@@ -182,6 +182,11 @@ public class Player implements IPlayerControl,
     private boolean mNativeHdrSource;
     private int mOpeningSeek = -1;
     private VideoColorInfo mVideoColorInfo = VideoColorInfo.UNKNOWN;
+    private boolean mWaitingForGpu;
+
+    private com.archos.mediacenter.video.utils.PlaybackDiagnostics diagnostics() {
+        return com.archos.mediacenter.video.utils.PlaybackDiagnostics.get(mContext);
+    }
 
     public UpscalingMode getUpscalingMode() {
         return UpscalingMode.fromPreference(PreferenceManager.getDefaultSharedPreferences(mContext)
@@ -189,6 +194,7 @@ public class Player implements IPlayerControl,
     }
 
     public void setUpscalingMode(UpscalingMode mode) {
+        diagnostics().event("mode_selected", mode.label);
         PreferenceManager.getDefaultSharedPreferences(mContext).edit()
                 .putString(UpscalingMode.PREFERENCE, mode.value).apply();
         // The render thread observes the preference and replaces only its pass graph.
@@ -215,16 +221,24 @@ public class Player implements IPlayerControl,
         return mSurfaceHolder != null && mDisplayTexture == null && !hdr;
     }
 
-    private void attachVideoSurface(IMediaPlayer player) {
+    private void attachVideoSurface(IMediaPlayer player, UpscalingRenderer prepared, String failure) {
+        if (!failure.isEmpty()) {
+            mUpscalingUnavailable = failure;
+            diagnostics().event("renderer_fallback", failure);
+        }
         if (mSurfaceHolder != null && mSurfaceHolder.getSurface().isValid()) {
-            if (useUpscalingRenderer()) {
+            if (prepared != null && useUpscalingRenderer()) {
                 try {
-                    mUpscalingRenderer = new UpscalingRenderer(mContext, mSurfaceHolder.getSurface());
+                    mUpscalingRenderer = prepared;
                     mUpscalingRenderer.setSource(mVideoWidth, mVideoHeight, mVideoColorInfo);
+                    diagnostics().observeGpu(mUpscalingRenderer::telemetry);
                     mSurfaceController.setGpuRenderingEnabled(true);
                     player.setSurface(mUpscalingRenderer.getDecoderSurface());
+                    diagnostics().capture("renderer_attached", mUpscalingRenderer.telemetry());
                     return;
                 } catch (RuntimeException e) {
+                    diagnostics().failure("gpu_surface_attach_failed", e);
+                    diagnostics().observeGpu(null);
                     mUpscalingUnavailable = "GPU renderer unavailable: " + e.getMessage();
                     log.warn("{}", mUpscalingUnavailable);
                     if (mUpscalingRenderer != null) { mUpscalingRenderer.close(); mUpscalingRenderer = null; }
@@ -236,6 +250,10 @@ public class Player implements IPlayerControl,
             Surface surface = new Surface(mVideoTexture);
             try { player.setSurface(surface); } finally { surface.release(); }
         }
+        if (prepared != null && prepared != mUpscalingRenderer) {
+            new Thread(prepared::close, "Unused-GPU-surface").start();
+        }
+        diagnostics().capture("renderer_attached", getUpscalingDiagnostics().describe());
     }
 
     private void updateUpscalingSource() {
@@ -261,6 +279,17 @@ public class Player implements IPlayerControl,
         public void run() {
             if (mPlaybackEnding) return;
             if (mCurrentState == STATE_REFRESH_PREPARED) {
+                if (mUpscalingRenderer != null && !mUpscalingRenderer.isReadyForPlayback()) {
+                    if (mWaitingForGpu) return;
+                    mWaitingForGpu = true;
+                    final int generation = mOpenGeneration;
+                    mUpscalingRenderer.preparePipeline(() -> mHandler.post(() -> {
+                        if (generation != mOpenGeneration || mPlaybackEnding) return;
+                        mWaitingForGpu = false;
+                        mPreparedAsync.run();
+                    }));
+                    return;
+                }
                 mCurrentState = STATE_SURFACE_PREPARED;
                 if (mRestoringSession) {
                     mRestoringSession = false;
@@ -559,6 +588,10 @@ public class Player implements IPlayerControl,
         mHandler.removeCallbacks(mPreparedAsync);
         mHandler.removeCallbacks(mRefreshRateCheckerAsync);
         IMediaPlayer old = mMediaPlayer;
+        long releaseStart = android.os.SystemClock.uptimeMillis();
+        boolean hadSession = old != null || mUpscalingRenderer != null;
+        if (hadSession) diagnostics().capture("player_closing", getUpscalingDiagnostics().describe());
+        mWaitingForGpu = false;
         mMediaPlayer = null; // callbacks from this instance are now obsolete
         mCurrentState = STATE_IDLE;
         mMetadataReady = false;
@@ -569,6 +602,10 @@ public class Player implements IPlayerControl,
         if (old != null) old.release(); // interrupts prepare/seek and joins rendering
         if (mUpscalingRenderer != null) { mUpscalingRenderer.close(); mUpscalingRenderer = null; }
         if (mSurfaceController != null) mSurfaceController.setGpuRenderingEnabled(false);
+        if (hadSession) {
+            diagnostics().event("release_completed", "elapsed_ms=" + (android.os.SystemClock.uptimeMillis() - releaseStart));
+            diagnostics().end();
+        }
     }
 
     private void suspendForSurface() {
@@ -659,6 +696,7 @@ public class Player implements IPlayerControl,
         // called start() previously
         log.info("openVideo: " + mUri);
         closeCurrentPlayer();
+        diagnostics().begin(mUri.getScheme() == null ? "file" : mUri.getScheme(), getUpscalingMode().value);
         if (mStopPosition != -1) {
             mResumeCtx.setSeek(mStopPosition);
         }
@@ -682,6 +720,8 @@ public class Player implements IPlayerControl,
         player.setOnSubtitleListener(this);
         mAudioOutputSignature = CustomApplication.getAudioOutputSignature();
         CustomApplication.applyAudioOutputToNative(mContext);
+        final Surface outputSurface = useUpscalingRenderer() && mSurfaceHolder.getSurface().isValid()
+                ? mSurfaceHolder.getSurface() : null;
         new Thread(() -> {
             try {
                 NetworkInitialization.awaitReadyForSmb(uri, mContext);
@@ -689,12 +729,31 @@ public class Player implements IPlayerControl,
                 if (generation != mOpenGeneration) return;
                 if (headers != null) player.setDataSource(mContext, uri, headers);
                 else player.setDataSource(mContext, uri);
+                UpscalingRenderer readyRenderer = null;
+                String rendererFailure = "";
+                if (outputSurface != null && generation == mOpenGeneration) {
+                    try { readyRenderer = new UpscalingRenderer(mContext, outputSurface); }
+                    catch (RuntimeException e) {
+                        rendererFailure = "GPU renderer unavailable: " + e.getMessage();
+                        diagnostics().failure("gpu_surface_initialization", e);
+                    }
+                }
+                final UpscalingRenderer prepared = readyRenderer;
+                final String failure = rendererFailure;
+                if (generation != mOpenGeneration) {
+                    if (prepared != null) prepared.close();
+                    return;
+                }
                 mHandler.post(() -> {
-                    if (generation != mOpenGeneration || player != mMediaPlayer) return;
+                    if (generation != mOpenGeneration || player != mMediaPlayer) {
+                        if (prepared != null) new Thread(prepared::close, "Obsolete-GPU-surface").start();
+                        return;
+                    }
                     try {
                         if ((mSurfaceHolder != null && mSurfaceHolder.getSurface().isValid()) || mVideoTexture != null) {
-                            attachVideoSurface(player);
+                            attachVideoSurface(player, prepared, failure);
                         } else {
+                            if (prepared != null) new Thread(prepared::close, "Detached-GPU-surface").start();
                             suspendForSurface();
                             return;
                         }
@@ -891,6 +950,19 @@ public class Player implements IPlayerControl,
             mResumeAfterFocusLoss = false;
         }
         if (!isInPlaybackState() || !mMetadataReady) return;
+        if (mUpscalingRenderer != null && !mUpscalingRenderer.isReadyForPlayback()) {
+            if (mWaitingForGpu) return;
+            mWaitingForGpu = true;
+            final int generation = mOpenGeneration;
+            diagnostics().event("play_waiting_for_gpu", "Shader graph is prepared before audio starts");
+            mUpscalingRenderer.preparePipeline(() -> mHandler.post(() -> {
+                if (generation != mOpenGeneration || mPlaybackEnding) return;
+                mWaitingForGpu = false;
+                if (mCurrentState == STATE_REFRESH_PREPARED) mPreparedAsync.run();
+                else if (mTargetState == STATE_PLAYING) start(state);
+            }));
+            return;
+        }
         if (!acquireFocus()) {
             mMediaPlayer.pause();
             mCurrentState = STATE_PAUSED;
@@ -898,7 +970,10 @@ public class Player implements IPlayerControl,
             stayAwake(false);
             return;
         }
+        long startAt = android.os.SystemClock.uptimeMillis();
+        diagnostics().event("native_start_requested", "state=" + mCurrentState);
         mMediaPlayer.start();
+        diagnostics().event("native_start_completed", "elapsed_ms=" + (android.os.SystemClock.uptimeMillis() - startAt));
         mCurrentState = STATE_PLAYING;
         stayAwake(true);
         if (mPlayerListener != null) mPlayerListener.onPlay(state);
@@ -916,7 +991,10 @@ public class Player implements IPlayerControl,
         if (log.isDebugEnabled()) log.debug("pause");
         if (isInPlaybackState()) {
             // Queue pause even if a preceding native start has not completed yet.
+            long startAt = android.os.SystemClock.uptimeMillis();
+            diagnostics().event("native_pause_requested", "state=" + mCurrentState);
             mMediaPlayer.pause();
+            diagnostics().event("native_pause_completed", "elapsed_ms=" + (android.os.SystemClock.uptimeMillis() - startAt));
             mCurrentState = STATE_PAUSED;
         }
         if (mPlayerListener != null) {
@@ -1191,10 +1269,13 @@ public class Player implements IPlayerControl,
             mVideoMetadata.setData(data);
             VideoMetadata.VideoTrack videoColor = mVideoMetadata.getVideoTrack();
             if (videoColor != null) {
+                diagnostics().event("video_metadata", "codec=" + videoColor.format + " fps="
+                        + videoColor.fpsRate + "/" + videoColor.fpsScale + " transfer=" + videoColor.colorTrc);
                 mNativeHdrSource = videoColor.colorTrc == 16 || videoColor.colorTrc == 18;
                 mVideoColorInfo = new VideoColorInfo(videoColor.colorSpace, videoColor.colorRange,
                         videoColor.chromaX, videoColor.chromaY, videoColor.chromaLocation, mNativeHdrSource, videoColor.componentDepth);
                 updateUpscalingSource();
+                if (mUpscalingRenderer != null) mUpscalingRenderer.setFrameRate((double) videoColor.fpsRate / videoColor.fpsScale);
             }
 
             if (mPlayerListener != null) {
@@ -1229,6 +1310,7 @@ public class Player implements IPlayerControl,
         mCanPause = mCanSeekForward = mCanSeekBack = true;
         if (log.isDebugEnabled()) log.debug("onPrepared: mCanPause={}, mCanSeekForward={}, mCanSeekBack={} -> handleMetadata", mCanPause, mCanSeekForward, mCanSeekBack);
         handleMetadata(mMediaPlayer);
+        diagnostics().capture("player_prepared", getUpscalingDiagnostics().describe());
         // A retriever may miss HDR on a network source. Reopen before the first frame
         // on the existing HDR surface path; the resume context retains session state.
         if (mUpscalingRenderer != null && !useUpscalingRenderer()) {
@@ -1431,6 +1513,7 @@ public class Player implements IPlayerControl,
 
     public boolean onInfo(IMediaPlayer mp, int what, int extra) {
         if (mp != mMediaPlayer) return true;
+        diagnostics().event("player_info", "what=" + what + " extra=" + extra);
         if (log.isDebugEnabled()) log.debug("onInfo: {} {}", what, extra);
         switch(what) {
         case IMediaPlayer.MEDIA_INFO_METADATA_UPDATE:
@@ -1471,6 +1554,8 @@ public class Player implements IPlayerControl,
     public boolean onError(IMediaPlayer mp, int errorCode, int errorQualCode, String msg) {
         if (mp != mMediaPlayer) return true;
         log.warn("onError: Error: {},{}", errorCode, errorQualCode);
+        diagnostics().event("player_error", "code=" + errorCode + " extra=" + errorQualCode + " message=" + msg);
+        diagnostics().capture("player_error", getUpscalingDiagnostics().describe());
         mCurrentState = STATE_ERROR;
         mTargetState = STATE_ERROR;
 

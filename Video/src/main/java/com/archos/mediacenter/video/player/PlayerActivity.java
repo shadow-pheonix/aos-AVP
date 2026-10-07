@@ -2737,6 +2737,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle(R.string.player_upscaling_diagnostics)
                 .setMessage(mPlayer.getUpscalingDiagnostics().describe())
+                .setNeutralButton(R.string.preferences_export_diagnostics_title, (dialog, which) ->
+                        com.archos.mediacenter.video.utils.DiagnosticsExporter.export(this))
                 .setPositiveButton(android.R.string.ok, null).show();
     }
 

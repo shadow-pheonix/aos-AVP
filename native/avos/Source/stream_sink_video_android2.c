@@ -15,6 +15,7 @@
  */
 
 #include "global.h"
+#include "playback_diagnostics.h"
 #include "debug.h"
 #include "stream_sink_video.h"
 #include "stream.h"
@@ -108,6 +109,9 @@ typedef struct priv {
 	int 		dropped;
 	int 		total_dropped;
 
+	int64_t diagnostic_last_ms;
+	int64_t diagnostic_max_iteration_ms;
+	unsigned int diagnostic_frames, diagnostic_drops;
 } priv_t;
 enum {
 	FRAME_STATE_QUEUED = 0,
@@ -157,6 +161,10 @@ static void *venc_thread(void *ctx)
 
 		if (!frame)
 			continue;
+		// Save metadata before the frame can be returned to the decoder.
+		int64_t diagnostic_start = atime64();
+		int diagnostic_pts = frame->time;
+		int diagnostic_duration = frame->duration;
 		p->frame_out = frame;
 		p->frames_state[frame->index] = FRAME_STATE_OUT;
 
@@ -167,6 +175,8 @@ static void *venc_thread(void *ctx)
 		int delay = 4 * 40;	// assume 4 frames at 25fps
 
 		int blit_duration = force_blit ? 0 : frame->blit_time - venc_time - delay;
+
+		int diagnostic_schedule_delta = blit_duration;
 
 DBGSI serprintf("[%2d]%3d[%2d|%4d](%3d)", frame_q_count( &p->venc_q ), blit_duration, frame->index, frame->decode_time, frame->blit_time - p->out_time );
 		if( s && s->paused ) {
@@ -190,6 +200,7 @@ DBGSI serprintf(" wait");
 			}
 		} else if (blit_duration < -10 && p->dropped < 5) {
 //			LOG("drop[%2d]  blit %8d  venc %8d  diff %d", frame->index, frame->blit_time, venc_time, blit_duration);
+		p->diagnostic_drops++;
 serprintf(" DROP(%3d)", blit_duration);
 			p->dropped ++;
 			p->total_dropped ++;
@@ -215,6 +226,20 @@ DBGSI serprintf(" ok");
 			p->frames_num_owned--;
 		}
 endloop:
+		// This includes intentional pacing and decoder handoff, not GPU presentation.
+		{
+			int64_t now = atime64();
+			p->diagnostic_frames++;
+			p->diagnostic_max_iteration_ms = MAX(p->diagnostic_max_iteration_ms, now - diagnostic_start);
+			if (now - p->diagnostic_last_ms >= 1000) {
+				playback_diagnostic("playback_diag sink=%s pts_ms=%d duration_ms=%d schedule_delta_ms=%d sink_clock_ms=%d queue_depth=%d frames=%u sink_drops=%u max_sink_iteration_ms=%lld (includes pacing/handoff; excludes GPU)",
+					__FILE__, diagnostic_pts, diagnostic_duration, diagnostic_schedule_delta, venc_time,
+					frame_q_count(&p->venc_q), p->diagnostic_frames, p->diagnostic_drops,
+					(long long)p->diagnostic_max_iteration_ms);
+				p->diagnostic_last_ms = now;
+				p->diagnostic_max_iteration_ms = 0;
+			}
+		}
 DBGSI serprintf("\n");
 		p->frame_out = NULL;
 		pthread_cond_broadcast(&p->venc_cond);

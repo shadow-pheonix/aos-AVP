@@ -126,7 +126,7 @@ cd Video
 ```
 
 The signed universal test APK is generated at
-`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050004-6.5.4-debug.apk`.
+`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050005-6.5.4-upscaling-diag2-debug.apk`.
 Build it in a configured Android SDK/NDK environment with:
 
 ```sh
@@ -167,3 +167,55 @@ native 1440p claim follows from the headless checks.
    show inactive upscaling. Check unsupported GPU/device fallback separately.
 7. Run sustained playback to observe GPU load, thermals and frame delivery before
    choosing a quality mode. Headless CPU/Mesa times do not predict Tab S9 performance.
+
+### Playback diagnostics test build (6.5.4-upscaling-diag2)
+
+Playback now records an app-private, bounded journal automatically. Export it
+from **Player Settings → Upscaling diagnostics → Export diagnostics**, or use
+Nova's existing diagnostics export after closing/reopening the app. The ZIP adds:
+
+- `playback/last-playback.txt`: timestamped last renderer state, retained across
+  player teardown and process restart. It is explicitly labelled as retained.
+- `playback/playback-events*.log`: mode changes, source/color/FPS, actual EGL
+  output size, shader build time, graph allocation estimate, CPU import/draw
+  submission/swap times, callbacks/coalescing, full GPU failures and main-thread
+  heartbeat stalls. Start/pause/release calls have elapsed-time records.
+- `playback/app-logcat*.log`: this app's PID only, including native AVOS/MediaCodec
+  scheduling, decoder handoff, sink drops and errors. The collector requires no
+  root or ADB; OEM restrictions/failures are reported in collector status.
+- `playback/collector-status.txt`: capture availability, flush result, memory
+  information and whether a playback session is currently open.
+- `playback/process-exits.txt` and available `.trace` files: up to five Android
+  11+ exit records, including available ANR/native-crash evidence. Individual
+  traces are capped at 256 KiB and native tombstones may be binary.
+
+Events use two 1 MiB files and app logcat two 2 MiB files. File IO and snapshots
+run on a diagnostic worker, not on the UI/render threads. Native messages are
+sampled at most once per second per sink. GPU snapshots are sampled every five
+seconds. The collector stays alive for 30 seconds after playback closes to
+capture decoder teardown. Existing Nova logs/crash reports are still included.
+
+CPU render timings are not GPU execution times. Fence completion latency
+includes queue/GPU/polling delay; allocation estimates omit decoder/driver/EGL
+memory. Decoder scheduling phase and SurfaceTexture timestamps do not establish
+actual audio-to-screen sync. Compositor drop counts and GPU timer queries are
+not exposed by this backend. Native decoder/sink drops and renderer coalescing
+are distinct measurements and must not be added as a screen-drop total.
+
+The renderer is initialized on the source worker. Initial shader graphs and
+pending paused-mode changes are prepared before starting audio, using async
+callbacks that preserve pause/exit intent. GPU submission is limited to one
+in-flight video frame with a GLES fence; pending decoder images are coalesced
+while that work completes. This bounds the renderer's submitted work but does
+not guarantee real-time throughput on Adreno or remove downstream compositor
+latency. These changes need device validation, especially PiP, resizing, HDR,
+mode switching and pause/resume. The headless shader checks do not test Android
+SurfaceTexture/EGL scheduling.
+
+To investigate the reported Play delay and A/V drift: play the same SDR clip for
+20–30 seconds in Off and each affected mode, pause/play once per mode, then
+export immediately from the player. Note whether audio leads or trails video,
+approximately how far, and whether drift grows or starts as a fixed offset.
+A screenshot of the live upscaling diagnostics is useful alongside the ZIP.
+The universal APK filename for this build is
+`org.courville.nova-6050005-6.5.4-upscaling-diag2-debug.apk`.

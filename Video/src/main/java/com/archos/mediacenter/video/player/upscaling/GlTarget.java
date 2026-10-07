@@ -95,6 +95,10 @@ final class GlTarget implements AutoCloseable {
         GLES31.glViewport(0, 0, width, height);
     }
 
+    long estimatedBytes() {
+        return (long) width * height * (components <= 2 ? components : 4) * (float32 ? 4 : 2);
+    }
+
     @Override
     public void close() {
         GLES31.glDeleteFramebuffers(1, new int[] {framebuffer}, 0);

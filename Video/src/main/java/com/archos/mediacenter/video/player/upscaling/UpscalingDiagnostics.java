@@ -10,6 +10,7 @@ public final class UpscalingDiagnostics {
     public final String backend, chroma, reason;
     public final long presentedFrames, coalescedFrames;
     public final double renderMs;
+    public final String performance;
 
     public UpscalingDiagnostics(
             UpscalingMode mode,
@@ -24,6 +25,25 @@ public final class UpscalingDiagnostics {
             long frames,
             long coalesced,
             double renderMs) {
+        this(
+                mode, sw, sh, rw, rh, active, backend, chroma, reason, frames, coalesced, renderMs,
+                "");
+    }
+
+    public UpscalingDiagnostics(
+            UpscalingMode mode,
+            int sw,
+            int sh,
+            int rw,
+            int rh,
+            boolean active,
+            String backend,
+            String chroma,
+            String reason,
+            long frames,
+            long coalesced,
+            double renderMs,
+            String performance) {
         selected = mode;
         sourceWidth = sw;
         sourceHeight = sh;
@@ -36,29 +56,34 @@ public final class UpscalingDiagnostics {
         presentedFrames = frames;
         coalescedFrames = coalesced;
         this.renderMs = renderMs;
+        this.performance = performance;
     }
 
     public String describe() {
         return String.format(
-                Locale.US,
-                "Upscaling: %s\n"
-                    + "Source: %d×%d → Render: %d×%d\n"
-                    + "Active: %s%s\n"
-                    + "Renderer: %s\n"
-                    + "Chroma: %s\n"
-                    + "Presented: %d; coalesced notifications: %d\n"
-                    + "CPU render + swap: %s; GPU timing: unavailable; decoder drops: unavailable",
-                selected.label,
-                sourceWidth,
-                sourceHeight,
-                renderWidth,
-                renderHeight,
-                active ? "yes" : "no",
-                reason.isEmpty() ? "" : " (" + reason + ")",
-                backend,
-                chroma,
-                presentedFrames,
-                coalescedFrames,
-                renderMs < 0 ? "unavailable" : String.format(Locale.US, "%.2f ms", renderMs));
+                        Locale.US,
+                        "Upscaling: %s\n"
+                                + "Source: %d×%d → Render: %d×%d\n"
+                                + "Active: %s%s\n"
+                                + "Renderer: %s\n"
+                                + "Chroma: %s\n"
+                                + "EGL swap submissions: %d; coalesced notifications: %d\n"
+                                + "CPU render + swap: %s; GPU timing: unavailable; decoder drops:"
+                                + " unavailable here (see app-logcat for native counters)",
+                        selected.label,
+                        sourceWidth,
+                        sourceHeight,
+                        renderWidth,
+                        renderHeight,
+                        active ? "yes" : "no",
+                        reason.isEmpty() ? "" : " (" + reason + ")",
+                        backend,
+                        chroma,
+                        presentedFrames,
+                        coalescedFrames,
+                        renderMs < 0
+                                ? "unavailable"
+                                : String.format(Locale.US, "%.2f ms", renderMs))
+                + (performance.isEmpty() ? "" : "\n" + performance);
     }
 }

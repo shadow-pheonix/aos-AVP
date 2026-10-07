@@ -160,6 +160,24 @@ final class GpuUpscalingPipeline implements AutoCloseable {
         draw();
     }
 
+    String allocationSummary() {
+        long bytes = 0;
+        for (GlTarget target : targets) bytes += target.estimatedBytes();
+        if (reconstruction != null) bytes += reconstruction.estimatedBytes();
+        if (ssim != null) bytes += ssim.estimatedBytes();
+        int passes =
+                reconstruction == null
+                        ? 2
+                        : 4
+                                + reconstruction.passCount()
+                                + (ssim == null ? (scaled == null ? 0 : 2) : ssim.passCount());
+        return "passes="
+                + passes
+                + " allocated_texture_bytes="
+                + bytes
+                + " (estimate excludes decoder, EGL buffers and driver overhead)";
+    }
+
     @Override
     public void close() {
         if (reconstruction != null) {

@@ -47,6 +47,7 @@ public final class DiagnosticsCrashHandler implements Thread.UncaughtExceptionHa
                         writer.println("app_version=" + BuildConfig.VERSION_NAME);
                         writer.println("device=" + Build.MANUFACTURER + " " + Build.MODEL);
                         writer.println("android=" + Build.VERSION.RELEASE + " sdk=" + Build.VERSION.SDK_INT);
+                        writer.println(PlaybackDiagnostics.currentForCrash());
                         writer.println();
                         if (throwable != null) {
                             throwable.printStackTrace(writer);

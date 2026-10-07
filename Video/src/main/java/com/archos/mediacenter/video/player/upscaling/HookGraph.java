@@ -209,6 +209,17 @@ final class HookGraph implements AutoCloseable {
         return result.target;
     }
 
+    long estimatedBytes() {
+        long bytes = 0;
+        for (Slot slot : slots) bytes += slot.target.estimatedBytes();
+        for (GlTarget lut : luts) bytes += lut.estimatedBytes();
+        return bytes;
+    }
+
+    int passCount() {
+        return steps.size();
+    }
+
     @Override
     public void close() {
         for (Step step : steps) step.program.close();

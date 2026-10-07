@@ -56,7 +56,7 @@ public final class DiagnosticsExporter {
         }, "diagnostics-export").start();
     }
 
-    private static File createBundle(Context context) throws IOException {
+    static File createBundle(Context context) throws IOException {
         File externalFiles = context.getExternalFilesDir(null);
         if (externalFiles == null) {
             throw new IOException("External files directory unavailable");
@@ -74,6 +74,7 @@ public final class DiagnosticsExporter {
         try (ZipOutputStream zip = new ZipOutputStream(
                 new BufferedOutputStream(new FileOutputStream(outFile)))) {
             addText(zip, "diagnostics-info.txt", buildMetadata(context, logDir));
+            PlaybackDiagnostics.get(context).addToZip(zip);
 
             if (logDir.isDirectory()) {
                 File[] files = logDir.listFiles();

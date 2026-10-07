@@ -73,4 +73,23 @@ public final class VideoColorInfo {
     public int hashCode() {
         return java.util.Objects.hash(space, range, chromaX, chromaY, location, hdr, depth);
     }
+
+    public String describe() {
+        return "matrix="
+                + space
+                + " range="
+                + range
+                + " depth="
+                + depth
+                + " hdr="
+                + hdr
+                + " chroma_shifts_plus_one="
+                + chromaX
+                + ","
+                + chromaY
+                + " chroma_location="
+                + location
+                + " native_yuv_metadata_supported="
+                + canSampleYuv;
+    }
 }

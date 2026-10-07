@@ -15,6 +15,7 @@
  */
 
 #include "global.h"
+#include "playback_diagnostics.h"
 #include "types.h"
 #include "debug.h"
 #include "util.h"
@@ -145,6 +146,8 @@ typedef struct priv {
 	int64_t venc_ref_time;
 
 	int dropped;
+	INT64 diagnostic_last_ns;
+	UINT64 diagnostic_decoder_drops;
 	UINT64 render_submit_seq; // render-thread owned; persists across pause/seek/flush
 	int video_frame_rate_num;
 	int video_frame_rate_den;
@@ -1387,6 +1390,7 @@ static void *videosink_thread(void *ctx)
 					goto endloop;
 				}
 				p->dropped++;
+				p->diagnostic_decoder_drops++;
 				// Keep flush from invalidating the MediaCodec buffer while the
 				// timeout path releases it outside the queue lock.
 				add_state_l(p, THREAD_STATE_RENDERING);
@@ -1745,6 +1749,7 @@ static void *videosink_thread(void *ctx)
 			goto endloop;
 		}
 
+		INT64 diagnostic_handoff_start_ns = _get_monotonic_ns();
 		int do_render = 1;
 		int render_error = 0;
 		int presented = 0;
@@ -1770,6 +1775,7 @@ static void *videosink_thread(void *ctx)
 				// Drop/release buffer immediately without rendering to catch up
 				render_error = sfdec_buf_render(p->sfdec, (sfbuf_t *)f->android_handle, 0, 0, 0);
 				p->dropped++;
+				p->diagnostic_decoder_drops++;
 				DBGSI serprintf("android_sync: late frame drop f_time=%d lateness=%lldms dropped=%d\n",
 					f->time, lateness_ns / 1000000LL, p->dropped);
 			} else {
@@ -1796,6 +1802,18 @@ static void *videosink_thread(void *ctx)
 			}
 		} else {
 			render_error = sfdec_buf_render(p->sfdec, (sfbuf_t *)f->android_handle, 0, 0, 0);
+		}
+
+		INT64 diagnostic_end_ns = _get_monotonic_ns();
+		if (diagnostic_end_ns - p->diagnostic_last_ns >= NSEC_PER_SEC) {
+			playback_diagnostic("video_pipeline_diag: pts_ms=%d epoch=%d deadline_ns=%lld handoff_start_ns=%lld handoff_ms=%.3f interval_ms=%.3f anchor_age_ms=%lld scheduler_phase_ms=%lld submitted=%llu decoder_drops=%llu presented=%d stale_epoch=%d error=%d (decoder scheduling; excludes GPU/compositor)\n",
+				f->time, f->epoch, (long long)render_ts_ns, (long long)diagnostic_handoff_start_ns,
+				(diagnostic_end_ns - diagnostic_handoff_start_ns) / 1000000.0, diag_interval_ms,
+				(long long)(diagnostic_handoff_start_ns / NSEC_PER_MSEC - diag_ref_ms),
+				(long long)f->time - diag_heard - (render_ts_ns / NSEC_PER_MSEC - diag_ref_ms) + diag_user_delay,
+				(unsigned long long)p->render_submit_seq, (unsigned long long)p->diagnostic_decoder_drops,
+				presented, stale_epoch_drop, render_error);
+			p->diagnostic_last_ns = diagnostic_end_ns;
 		}
 
 		pthread_mutex_lock(&p->locked.mtx);

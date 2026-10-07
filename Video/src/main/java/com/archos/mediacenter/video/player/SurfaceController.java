@@ -447,9 +447,10 @@ public class SurfaceController {
         if (((mEffectMode & VideoEffect.TB_MODE)!=0) && (ar <= 1.5)) dcw *= 2;
         if (((mEffectMode & VideoEffect.SBS_MODE)!=0) && (ar >= 3.0)) dch *= 2;
 
-        if (log.isDebugEnabled()) log.debug("CONFIG updateSurface: setFixedSize({},{})", vw, vh);
-
-        if (!mGpuRenderingEnabled && mSurfaceView != null) mSurfaceView.getHolder().setFixedSize(vw, vh);
+        if (!mGpuRenderingEnabled && mSurfaceView != null) {
+            mSurfaceView.getHolder().setFixedSize(vw, vh);
+            log.debug("CONFIG decoder surface buffer: {}x{}", vw, vh);
+        }
 
         dcw = Math.round(dcw  / cropW);
         dch = Math.round(dch / cropH);
@@ -483,8 +484,10 @@ public class SurfaceController {
 
         // GPU output is already reconstructed at the fitted video area resolution.
         // Its decoder SurfaceTexture remains source-sized; Android must not scale its output buffer.
-        if (mGpuRenderingEnabled && mSurfaceView != null)
+        if (mGpuRenderingEnabled && mSurfaceView != null) {
             mSurfaceView.getHolder().setFixedSize(dcw, dch);
+            log.debug("CONFIG GPU output surface buffer: {}x{}", dcw, dch);
+        }
 
         if (log.isDebugEnabled()) log.debug("CONFIG updateSurface: setLayoutParams({},{})", dcw, dch);
 

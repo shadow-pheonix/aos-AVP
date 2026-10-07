@@ -14,6 +14,10 @@
 
 package com.archos.mediacenter.video.player;
 
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+import static org.robolectric.Shadows.shadowOf;
+
 import android.app.Application;
 import android.net.Uri;
 import android.os.Handler;
@@ -21,23 +25,23 @@ import android.os.Looper;
 import android.view.SurfaceHolder;
 
 import com.archos.mediacenter.video.CustomApplication;
+import com.archos.mediacenter.video.player.upscaling.UpscalingRenderer;
+import com.archos.mediacenter.video.utils.PlaybackDiagnostics;
 import com.archos.medialib.IMediaPlayer;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
 
 import java.lang.reflect.Field;
 import java.time.Duration;
-
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-import static org.robolectric.Shadows.shadowOf;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(application = Application.class, manifest = Config.NONE, sdk = 30)
@@ -49,6 +53,7 @@ public class PlaybackRouteRecoveryTest {
     private Runnable prepared;
     private Runnable refresh;
     private MockedStatic<CustomApplication> application;
+    private MockedStatic<PlaybackDiagnostics> diagnostics;
 
     @Before
     public void setUp() throws Exception {
@@ -58,6 +63,11 @@ public class PlaybackRouteRecoveryTest {
         handler = new Handler(Looper.getMainLooper());
         prepared = mock(Runnable.class);
         refresh = mock(Runnable.class);
+        set("mContext", RuntimeEnvironment.getApplication());
+        set("mUpscalingUnavailable", "");
+        diagnostics = mockStatic(PlaybackDiagnostics.class);
+        PlaybackDiagnostics recorder = mock(PlaybackDiagnostics.class);
+        diagnostics.when(() -> PlaybackDiagnostics.get(any())).thenReturn(recorder);
         set("mHandler", handler);
         set("mPreparedAsync", prepared);
         set("mRefreshRateCheckerAsync", refresh);
@@ -77,6 +87,7 @@ public class PlaybackRouteRecoveryTest {
     @After
     public void tearDown() {
         application.close();
+        diagnostics.close();
     }
 
     @Test
@@ -124,6 +135,55 @@ public class PlaybackRouteRecoveryTest {
     @Test
     public void changedCapabilitiesPreserveUserPauseAndPosition() throws Exception {
         assertRouteRecoveryPreservesTransport(6); // PAUSED
+    }
+
+    @Test
+    public void startWaitsForGpuPreparationBeforeStartingAudio() throws Exception {
+        UpscalingRenderer renderer = mock(UpscalingRenderer.class);
+        set("mUpscalingRenderer", renderer);
+        set("mCurrentState", 6);
+        set("mTargetState", 6);
+        set("mFocusGranted", true);
+        player.start(PlayerController.STATE_NORMAL);
+        player.start(PlayerController.STATE_NORMAL);
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(renderer, times(1)).preparePipeline(callback.capture());
+        verify(media, never()).start();
+
+        when(renderer.isReadyForPlayback()).thenReturn(true);
+        callback.getValue().run();
+        shadowOf(Looper.getMainLooper()).idle();
+        verify(media, times(1)).start();
+        assertEquals(5, get("mCurrentState"));
+    }
+
+    @Test
+    public void pauseDuringGpuPreparationDoesNotResumeWhenItFinishes() throws Exception {
+        UpscalingRenderer renderer = mock(UpscalingRenderer.class);
+        set("mUpscalingRenderer", renderer);
+        player.start(PlayerController.STATE_NORMAL);
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(renderer).preparePipeline(callback.capture());
+        player.pause(PlayerController.STATE_NORMAL);
+        when(renderer.isReadyForPlayback()).thenReturn(true);
+        callback.getValue().run();
+        shadowOf(Looper.getMainLooper()).idle();
+        verify(media, never()).start();
+        assertEquals(6, get("mTargetState"));
+    }
+
+    @Test
+    public void exitingDuringGpuPreparationRejectsItsLateCallback() throws Exception {
+        UpscalingRenderer renderer = mock(UpscalingRenderer.class);
+        set("mUpscalingRenderer", renderer);
+        player.start(PlayerController.STATE_NORMAL);
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(renderer).preparePipeline(callback.capture());
+        player.beginPlaybackExit();
+        when(renderer.isReadyForPlayback()).thenReturn(true);
+        callback.getValue().run();
+        shadowOf(Looper.getMainLooper()).idle();
+        verify(media, never()).start();
     }
 
     private void assertRouteRecoveryPreservesTransport(int target) throws Exception {
