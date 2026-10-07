@@ -126,7 +126,7 @@ cd Video
 ```
 
 The signed universal test APK is generated at
-`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050006-6.5.4-upscaling-sync3-debug.apk`.
+`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050007-6.5.4-upscaling-sync4-debug.apk`.
 Build it in a configured Android SDK/NDK environment with:
 
 ```sh
@@ -269,3 +269,32 @@ once, then use the existing **Export diagnostics** option immediately after a
 freeze. Record whether audio leads/trails and whether the offset grows. Test a
 second H.264 clip too. Do not compensate with a manual audio-delay setting during
 comparison, since it would conceal the underlying timing problem.
+
+### Unchanged-speed startup checkpoint fix (6.5.4-upscaling-sync4)
+
+The sync3 device export shows a persistent 679–756 ms shift between decoded
+media PTS and scheduled video PTS, beginning around submission 23. Decoder
+outputs retain their normal 41–42 ms cadence. The same shift occurs on the
+original Off renderer and the GPU modes, so shader timing cannot account for
+this shared symptom.
+
+The audio tempo graph publishes its initial speed on creation. The checkpoint
+queue previously treated its initial 1x speed as a transition from 1x and let
+the warming output/media ledger replace the video timeline. That mapping can
+move all following video deadlines into the future, freezing picture while
+audio continues and leaving a fixed audio-leading offset. A host regression
+executes the production checkpoint queue and poll using the observed 755 ms
+ledger phase: the previous code moves decoded PTS 888958 to scheduled PTS
+889713; the fixed code leaves it at 888958.
+
+An unchanged-speed checkpoint now preserves the committed timeline when there
+is no pending real transition or explicit reset. Actual changes, a queued
+return to 1x, reset checkpoints and pause gating retain their existing behavior
+and are covered by the same native regression. No manual audio delay is added.
+Native export logs record ignored/applied tempo checkpoints and both media PTS
+and timeline anchors alongside scheduled PTS.
+
+Run `python native/avos/test/test_atempo_startup.py` from the repository root.
+This verifies the scheduling mechanism independently of Android. Confirmation
+that the reported freeze and audible sync are resolved still requires the
+Tab S9; FSRCNNX GPU throughput remains a separate hardware limitation.

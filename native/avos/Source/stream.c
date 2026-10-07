@@ -25,6 +25,7 @@
 #include "browse.h"
 #include "power_hdd.h"
 #include "stream_sync.h"
+#include "playback_diagnostics.h"
 
 #include "athread.h"
 #include "atime.h"
@@ -981,13 +982,26 @@ int stream_set_av_speed( STREAM *s, float av_speed )
 // output boundary has been translated into the sink's written-frame domain.
 int stream_atempo_commit_queue( STREAM *s, float speed, UINT64 boundary )
 {
-	if( s->atempo_commit_count &&
-	    s->atempo_commit_q[s->atempo_commit_head].boundary == STREAM_ATEMPO_COMMIT_BOUNDARY_DEFER ) {
+	int reset_pending = s->atempo_commit_count &&
+		s->atempo_commit_q[s->atempo_commit_head].boundary == STREAM_ATEMPO_COMMIT_BOUNDARY_DEFER;
+	if( reset_pending ) {
 		s->atempo_commit_count = 0;
 		s->atempo_commit_head = 0;
 	}
 	float previous = s->video_speed_den > 0 ?
 		(float)s->video_speed_num / s->video_speed_den : 1.0f;
+	// Creating the tempo graph publishes its initial speed, including ordinary
+	// 1x playback. This is not a speed transition. Reanchoring it to a warming
+	// output/media ledger bakes its startup phase into every video's PTS and
+	// holds picture while sound continues. Only actual transitions or an
+	// explicitly pending reset may install a new mapping. Pending real changes
+	// still own their ordered checkpoints, including a later return to 1x.
+	if( !reset_pending && boundary != STREAM_ATEMPO_COMMIT_BOUNDARY_DEFER &&
+	    !s->atempo_commit_count && fabsf(speed - previous) < 1e-6f ) {
+		playback_diagnostic("tempo_commit_diag: ignored initial/unchanged speed=%.3f boundary=%llu; preserving committed media timeline\n",
+			speed, (unsigned long long)boundary);
+		return 0;
+	}
 	if( s->atempo_commit_count ) {
 		int tail = (s->atempo_commit_head + s->atempo_commit_count - 1) % STREAM_ATEMPO_COMMIT_MAX;
 		previous = s->atempo_commit_q[tail].speed;
@@ -1087,6 +1101,9 @@ static void _stream_atempo_commit_poll( STREAM *s, int drained )
 	// projection there.  anchor_ts and the video-sink anchor stay unchanged.
 	int anchor_rst_use = have_ph && ledger_state == 0 && anchor_rst_ledger >= 0
 		? anchor_rst_ledger : anchor_rst;
+	playback_diagnostic("tempo_commit_diag: apply speed=%.3f anchor_ts=%d anchor_rst=%d projected_rst=%d ledger_state=%d playhead=%llu queued=%d\n",
+		applied_speed, anchor_ts, anchor_rst_use, anchor_rst, ledger_state,
+		(unsigned long long)playhead, s->atempo_commit_count);
 
 	DBG serprintf("atempo_rst_anchor: speed=%.3f anchor_ts=%d anchor_rst_proj=%d anchor_rst_ledger=%d state=%d flipped=%d playhead=%llu have_ph=%d\n",
 		applied_speed, anchor_ts, anchor_rst, anchor_rst_ledger, ledger_state,

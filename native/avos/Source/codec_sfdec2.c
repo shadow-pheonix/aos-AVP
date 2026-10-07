@@ -1759,6 +1759,7 @@ static void *videosink_thread(void *ctx)
 		// AudioTrack or change the clock being measured.
 		INT64 diag_ref_ms = p->venc_ref_time;
 		int diag_heard = p->venc_put_time;
+		timeline_state_t diag_timeline = p->video_timeline;
 		int diag_user_delay = s ? (int)(s->av_delay * p->video_timeline.inv_speed) : 0;
 		double diag_interval_ms = p->video_frame_rate_num > 0 && p->video_timeline.speed > 0 ?
 			1000.0 * p->video_frame_rate_den / (p->video_frame_rate_num * p->video_timeline.speed) : 0;
@@ -1808,13 +1809,14 @@ static void *videosink_thread(void *ctx)
 
 		INT64 diagnostic_end_ns = _get_monotonic_ns();
 		if (diagnostic_end_ns - p->diagnostic_last_ns >= NSEC_PER_SEC) {
-			playback_diagnostic("video_pipeline_diag: pts_ms=%d epoch=%d deadline_ns=%lld handoff_start_ns=%lld handoff_ms=%.3f interval_ms=%.3f anchor_age_ms=%lld scheduler_phase_ms=%lld submitted=%llu decoder_drops=%llu presented=%d stale_epoch=%d error=%d (decoder scheduling; excludes GPU/compositor)\n",
+			playback_diagnostic("video_pipeline_diag: pts_ms=%d epoch=%d deadline_ns=%lld handoff_start_ns=%lld handoff_ms=%.3f interval_ms=%.3f anchor_age_ms=%lld scheduler_phase_ms=%lld submitted=%llu decoder_drops=%llu presented=%d stale_epoch=%d error=%d media_pts_ms=%d timeline_rst=%.3f timeline_ts=%.3f timeline_speed=%.3f (decoder scheduling; excludes GPU/compositor)\n",
 				f->time, f->epoch, (long long)render_ts_ns, (long long)diagnostic_handoff_start_ns,
 				(diagnostic_end_ns - diagnostic_handoff_start_ns) / 1000000.0, diag_interval_ms,
 				(long long)(diagnostic_handoff_start_ns / NSEC_PER_MSEC - diag_ref_ms),
 				(long long)f->time - diag_heard - (render_ts_ns / NSEC_PER_MSEC - diag_ref_ms) + diag_user_delay,
 				(unsigned long long)p->render_submit_seq, (unsigned long long)p->diagnostic_decoder_drops,
-				presented, stale_epoch_drop, render_error);
+				presented, stale_epoch_drop, render_error, f->media_time_valid ? f->media_time : -1,
+				diag_timeline.rst_anchor, diag_timeline.ts_anchor, diag_timeline.speed);
 			p->diagnostic_last_ns = diagnostic_end_ns;
 		}
 
