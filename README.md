@@ -1,3 +1,17 @@
+# Nova startup timeline fix — sync4
+
+[Download Nova-Upscaling-sync4-debug.apk](https://github.com/shadow-pheonix/aos-AVP/raw/refs/heads/upscaling-apk-2026-10-07/Nova-Upscaling-sync4-debug.apk)
+
+Version 6.5.4-upscaling-sync4 (6050007). Install over the previous test APK with the same signing key.
+
+Fixes an incorrect unchanged-speed checkpoint at ordinary 1x audio-filter startup. The previous code could shift video timestamps forward while audio continued. The native regression reproduces the device's 755 ms shift before the patch and zero added hold after it. Real speed changes and reset checkpoints remain covered.
+
+Native regression, 56 selected Android tests, lint and APK verification passed. Audible sync still needs confirmation on the Tab S9. FSRCNNX GPU throughput is a separate limitation. Use the existing Export diagnostics option if any freeze/desync remains.
+
+[Matching source](https://github.com/shadow-pheonix/aos-AVP/tree/0b614edaf456f511dd34deced67cdaf212f7a833) · [Build details and checksum](Nova-Upscaling-sync4-build.txt)
+
+---
+
 # Nova Upscaling timing and FSRCNNX test update
 
 [Download Nova-Upscaling-sync3-debug.apk](https://github.com/shadow-pheonix/aos-AVP/raw/refs/heads/upscaling-apk-2026-10-07/Nova-Upscaling-sync3-debug.apk)

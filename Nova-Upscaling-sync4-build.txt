@@ -1,0 +1,14 @@
+Nova Upscaling sync4 startup timing fix
+APK: Nova-Upscaling-sync4-debug.apk
+Version: 6.5.4-upscaling-sync4 (6050007)
+Package: org.courville.nova
+Source: 0b614edaf456f511dd34deced67cdaf212f7a833
+Source branch: upscaling-sync-2026-10-07-fix-startup
+Size: 101928619 bytes
+SHA-256: 654c7dae198c11b505b10cc6dbe12daf5fd844f2d4f5f23debb736e7fdc5f352
+Signing certificate SHA-256: 1741729a039d59de3611eca6f8064001f6da898a878e4ef61b98f8d0ff224bd7
+Universal debug APK: arm64-v8a, armeabi-v7a, x86, x86_64
+Native regression: production tempo queue/poll reproduced an added 755 ms video hold before the fix and zero after the fix; real speed changes, queued return to 1x, reset checkpoint and pause checks passed under UBSan.
+Verification: 56 selected Android unit tests passed; lint passed; ZIP integrity and shader asset identity passed; all ABI native dependencies resolved; APK signature verified; startup fix and media timeline diagnostic strings verified in all four native libraries.
+Device confirmation of audible sync remains pending. FSRCNNX GPU throughput is separate from the shared startup timing bug.
+Export logs using the existing Export diagnostics option.
