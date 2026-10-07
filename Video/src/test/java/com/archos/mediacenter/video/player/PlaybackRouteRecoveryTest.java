@@ -24,7 +24,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.SurfaceHolder;
 
+import androidx.preference.PreferenceManager;
+
 import com.archos.mediacenter.video.CustomApplication;
+import com.archos.mediacenter.video.player.upscaling.UpscalingMode;
 import com.archos.mediacenter.video.player.upscaling.UpscalingRenderer;
 import com.archos.mediacenter.video.utils.PlaybackDiagnostics;
 import com.archos.medialib.IMediaPlayer;
@@ -64,6 +67,10 @@ public class PlaybackRouteRecoveryTest {
         prepared = mock(Runnable.class);
         refresh = mock(Runnable.class);
         set("mContext", RuntimeEnvironment.getApplication());
+        PreferenceManager.getDefaultSharedPreferences(RuntimeEnvironment.getApplication())
+                .edit()
+                .clear()
+                .commit();
         set("mUpscalingUnavailable", "");
         diagnostics = mockStatic(PlaybackDiagnostics.class);
         PlaybackDiagnostics recorder = mock(PlaybackDiagnostics.class);
@@ -184,6 +191,56 @@ public class PlaybackRouteRecoveryTest {
         callback.getValue().run();
         shadowOf(Looper.getMainLooper()).idle();
         verify(media, never()).start();
+    }
+
+    @Test
+    public void offUsesTheOriginalSurfaceWithoutAGpuBridge() throws Exception {
+        var method = Player.class.getDeclaredMethod("useUpscalingRenderer");
+        method.setAccessible(true);
+        player.setUpscalingMode(UpscalingMode.OFF);
+        assertEquals(false, method.invoke(player));
+        player.setUpscalingMode(UpscalingMode.RAVU);
+        assertEquals(true, method.invoke(player));
+        set("mNativeHdrSource", true);
+        assertEquals(false, method.invoke(player));
+        verifyNoInteractions(media);
+    }
+
+    @Test
+    public void leavingOffPreservesPlayingPositionAndTransport() throws Exception {
+        set("mOpenedUpscalingMode", UpscalingMode.OFF);
+        when(media.getCurrentPosition()).thenReturn(12_345);
+        doNothing().when(player).openVideo();
+        player.setUpscalingMode(UpscalingMode.RAVU);
+        verify(media).release();
+        verify(player).openVideo();
+        assertEquals(12_345, get("mStopPosition"));
+        assertEquals(5, get("mTargetState"));
+        assertEquals(true, get("mRestoringSession"));
+    }
+
+    @Test
+    public void choosingOffKeepsUserPauseAndPosition() throws Exception {
+        set("mOpenedUpscalingMode", UpscalingMode.FSRCNNX);
+        set("mCurrentState", 6);
+        set("mTargetState", 6);
+        when(media.getCurrentPosition()).thenReturn(54_321);
+        doNothing().when(player).openVideo();
+        player.setUpscalingMode(UpscalingMode.OFF);
+        verify(media).release();
+        verify(player).openVideo();
+        assertEquals(54_321, get("mStopPosition"));
+        assertEquals(6, get("mTargetState"));
+        assertEquals(true, get("mRestoringSession"));
+    }
+
+    @Test
+    public void changesBetweenGpuModesDoNotReopenPlayback() throws Exception {
+        set("mOpenedUpscalingMode", UpscalingMode.RAVU);
+        player.setUpscalingMode(UpscalingMode.FSRCNNX);
+        player.setUpscalingMode(UpscalingMode.SGSR1);
+        verifyNoInteractions(media);
+        verify(player, never()).openVideo();
     }
 
     private void assertRouteRecoveryPreservesTransport(int target) throws Exception {

@@ -7,6 +7,7 @@ import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
+import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES31;
@@ -75,6 +76,10 @@ public final class UpscalingRenderer
     private long overBudgetFrames, renderFailures, lastFailureAt;
     private volatile boolean graphReady;
     private boolean warming;
+    private boolean presentationTimeSupported, presentationTimeFailed;
+    private long lastImportedAt, inputGapCount, timestampGapCount;
+    private double inputAgeMs, lastInputGapMs, lastTimestampStepMs;
+    private long presentationTimestampNs;
 
     public UpscalingRenderer(Context context, Surface output) {
         this.context = context.getApplicationContext();
@@ -285,6 +290,11 @@ public final class UpscalingRenderer
                 GLES31.glGetString(GLES31.GL_VERSION)
                         + " / "
                         + GLES31.glGetString(GLES31.GL_RENDERER);
+        String eglExtensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS);
+        presentationTimeSupported =
+                eglExtensions != null && eglExtensions.contains("EGL_ANDROID_presentation_time");
+        recorder.event(
+                "egl_frame_timing", "presentation_time_supported=" + presentationTimeSupported);
         String extensions = GLES31.glGetString(GLES31.GL_EXTENSIONS);
         yuvExtension = extensions != null && extensions.contains("GL_EXT_YUV_target");
         int[] maximum = new int[1];
@@ -373,11 +383,41 @@ public final class UpscalingRenderer
             }
             long frameStart = System.nanoTime();
             phase("importing decoder frame");
+            boolean acquiredImage = newFrame;
             if (newFrame) {
                 newFrame = false;
                 inputTexture.updateTexImage();
                 inputTexture.getTransformMatrix(transform);
-                lastInputTimestamp = inputTexture.getTimestamp();
+                long timestamp = inputTexture.getTimestamp();
+                long importedAt = System.nanoTime();
+                inputAgeMs = (importedAt - timestamp) / 1_000_000.0;
+                lastInputGapMs =
+                        lastImportedAt == 0 ? 0 : (importedAt - lastImportedAt) / 1_000_000.0;
+                lastTimestampStepMs =
+                        lastInputTimestamp == 0
+                                ? 0
+                                : (timestamp - lastInputTimestamp) / 1_000_000.0;
+                double gapThreshold = Math.max(100, frameBudgetMs * 2.5);
+                if (lastInputGapMs > gapThreshold
+                        || lastTimestampStepMs > gapThreshold
+                        || lastTimestampStepMs < 0) {
+                    if (lastInputGapMs > gapThreshold) inputGapCount++;
+                    if (lastTimestampStepMs > gapThreshold || lastTimestampStepMs < 0)
+                        timestampGapCount++;
+                    recorder.event(
+                            "decoder_image_gap",
+                            "mode="
+                                    + selected.label
+                                    + " arrival_gap_ms="
+                                    + lastInputGapMs
+                                    + " timestamp_step_ms="
+                                    + lastTimestampStepMs
+                                    + " timestamp_age_ms="
+                                    + inputAgeMs
+                                    + " (may include pause/seek; not a compositor-drop count)");
+                }
+                lastImportedAt = importedAt;
+                lastInputTimestamp = timestamp;
                 hasFrame = true;
             }
             importMs = (System.nanoTime() - frameStart) / 1_000_000.0;
@@ -485,6 +525,18 @@ public final class UpscalingRenderer
             GLES31.glFlush();
             phase("EGL presentation");
             long swapStart = System.nanoTime();
+            presentationTimestampNs =
+                    VideoFrameTiming.presentationTimeNs(
+                            lastInputTimestamp, System.nanoTime(), acquiredImage);
+            if (presentationTimeSupported
+                    && !presentationTimeFailed
+                    && !EGLExt.eglPresentationTimeANDROID(
+                            display, window, presentationTimestampNs)) {
+                presentationTimeFailed = true;
+                recorder.event(
+                        "egl_frame_timing_failed",
+                        "error=0x" + Integer.toHexString(EGL14.eglGetError()));
+            }
             if (!EGL14.eglSwapBuffers(display, window))
                 throw new IllegalStateException(
                         "EGL swap failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
@@ -592,6 +644,10 @@ public final class UpscalingRenderer
                             + " draws=%d\n"
                             + "Callbacks=%d; last SurfaceTexture timestamp_ns=%d;"
                             + " render_failures=%d\n"
+                            + "Decoder image age=%.2f ms; arrival gap=%.2f ms; timestamp step=%.2f"
+                            + " ms\n"
+                            + "Image gaps=%d; timestamp gaps=%d (may include pause/seek)\n"
+                            + "EGL presentation timing=%s; last requested timestamp_ns=%d\n"
                             + "%s\n"
                             + "%s",
                         importMs,
@@ -605,6 +661,15 @@ public final class UpscalingRenderer
                         callbackCount,
                         lastInputTimestamp,
                         renderFailures,
+                        inputAgeMs,
+                        lastInputGapMs,
+                        lastTimestampStepMs,
+                        inputGapCount,
+                        timestampGapCount,
+                        presentationTimeSupported && !presentationTimeFailed
+                                ? "decoder deadline preserved"
+                                : "unavailable",
+                        presentationTimestampNs,
                         allocation,
                         s.color.describe()));
     }

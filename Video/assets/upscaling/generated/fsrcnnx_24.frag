@@ -34,6 +34,14 @@ uniform vec2 RES4_size;
 #define RES4_mul 1.0
 #define RES4_tex(p) texture(RES4_raw, (p))
 #define RES4_texOff(p) texture(RES4_raw, RES4_pos + vec2(p) * RES4_pt)
+#undef RES1_texOff
+#define RES1_texOff(p) texelFetch(RES1_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(RES1_size) - 1), 0)
+#undef RES2_texOff
+#define RES2_texOff(p) texelFetch(RES2_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(RES2_size) - 1), 0)
+#undef RES3_texOff
+#define RES3_texOff(p) texelFetch(RES3_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(RES3_size) - 1), 0)
+#undef RES4_texOff
+#define RES4_texOff(p) texelFetch(RES4_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(RES4_size) - 1), 0)
 vec4 hook()
 {
 vec4 res = vec4(0.2004896253347397,0.1965623348951340,0.2031263858079910,0.1992818266153336);

@@ -126,7 +126,7 @@ cd Video
 ```
 
 The signed universal test APK is generated at
-`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050005-6.5.4-upscaling-diag2-debug.apk`.
+`Video/build/outputs/apk/noamazon/debug/org.courville.nova-6050006-6.5.4-upscaling-sync3-debug.apk`.
 Build it in a configured Android SDK/NDK environment with:
 
 ```sh
@@ -219,3 +219,53 @@ approximately how far, and whether drift grows or starts as a fixed offset.
 A screenshot of the live upscaling diagnostics is useful alongside the ZIP.
 The universal APK filename for this build is
 `org.courville.nova-6050005-6.5.4-upscaling-diag2-debug.apk`.
+
+### Shared playback timing and FSRCNNX update (6.5.4-upscaling-sync3)
+
+Off now uses Nova's original decoder → Android SurfaceView path. It creates no
+upscaling EGL context or SurfaceTexture bridge. Switching across Off reopens the
+surface route at the current position while retaining play/pause intent and
+track settings. Changes among RAVU, FSRCNNX and SGSR1 continue to replace only the
+GPU graph. HDR/stereo routes remain on their existing paths. Preference changes
+from both the playback controls and the settings screen are observed.
+
+The GPU bridge now forwards a freshly acquired frame's monotonic presentation
+deadline to the final window using `EGL_ANDROID_presentation_time`. Late frames
+and paused redraws present immediately. Missing/non-monotonic producer times
+and timestamps more than one second ahead are not allowed to hold the window.
+EGL capability/failure status is recorded. This corrects a missing timestamp
+handoff; it does not establish that the decoder/audio clock itself is correct.
+
+FSRCNNX's source-grid feature convolutions now use clamped integer texel fetches
+instead of normalized linear texture sampling. The trained weights, layer count,
+x2 subpixel reconstruction, luma/chroma composition and Lanczos downscale are
+unchanged. Fullscreen intermediate passes discard obsolete framebuffer contents
+before overwriting them, avoiding unnecessary tile-buffer loads on mobile GPUs.
+The full reconstruction graph was compared against the previous normalized
+sampling on noisy textures, image borders and even/odd dimensions. Maximum
+normalized output difference was 0.000977; mean difference was below 0.000042.
+These Mesa comparisons establish close numerical output, not Adreno speed.
+
+Diagnostics now include decoder-image arrival gaps, timestamp jumps and age,
+and the requested output presentation timestamp. Gaps include pause/seek and
+must not be interpreted as compositor drop counts. Native logs capture the first
+64 decoder outputs after open/flush and subsequent large timestamp/read gaps,
+including raw versus selected PTS. This distinguishes decoder/PTS problems from
+GPU bridge delays without changing native audio clock or timestamp repair logic.
+
+Device evidence motivating this patch: a 24 fps 1920×816 SDR HEVC clip, fitted
+into 2560×1088, sustained roughly 24 acquired frames/s in Off/SGSR1 but fell to
+roughly 12–18 frames/s in portions of FSRCNNX playback. There were no shader
+failures; the highest CPU render+swap time was 83.13 ms in FSRCNNX, and its graph
+estimated 284,446,720 bytes of owned textures. The shared startup freeze cannot
+be conclusively attributed from five-second renderer snapshots and one-second
+native timing samples. The new Off route provides a platform-renderer comparison.
+Actual audio-to-screen timing, pause/resume, switching and FSRCNNX throughput
+still require Galaxy Tab S9 validation.
+
+Install `org.courville.nova-6050006-6.5.4-upscaling-sync3-debug.apk` over the prior
+test APK. First test the same clip in Off, then SGSR1, RAVU and FSRCNNX; pause/play
+once, then use the existing **Export diagnostics** option immediately after a
+freeze. Record whether audio leads/trails and whether the offset grows. Test a
+second H.264 clip too. Do not compensate with a manual audio-delay setting during
+comparison, since it would conceal the underlying timing problem.

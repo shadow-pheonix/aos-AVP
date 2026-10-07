@@ -13,6 +13,8 @@ uniform vec2 LUMA_size;
 #define LUMA_mul 1.0
 #define LUMA_tex(p) texture(LUMA_raw, (p))
 #define LUMA_texOff(p) texture(LUMA_raw, LUMA_pos + vec2(p) * LUMA_pt)
+#undef LUMA_texOff
+#define LUMA_texOff(p) texelFetch(LUMA_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(LUMA_size) - 1), 0)
 vec4 hook()
 {
 vec4 res = vec4(-0.0074675981886685,-0.0112727740779519,-0.0078150173649192,0.0054601472802460);

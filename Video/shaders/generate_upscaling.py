@@ -57,6 +57,17 @@ uniform vec2 {name}_size;
 #define {name}_tex(p) texture({name}_raw, (p))
 #define {name}_texOff(p) texture({name}_raw, {name}_pos + vec2(p) * {name}_pt)
 '''
+        # The CNN feature passes read integer neighbours on the original pixel
+        # grid. Avoid normalized-coordinate interpolation and implicit LOD work;
+        # retain linear sampling in the final x2/subpixel reconstruction pass.
+        same_grid = (prefix == 'fsrcnnx'
+                     and directives.get('WIDTH', ['HOOKED.w']) == ['HOOKED.w']
+                     and directives.get('HEIGHT', ['HOOKED.h']) == ['HOOKED.h'])
+        if same_grid:
+            for name in binds:
+                glsl += f'''#undef {name}_texOff
+#define {name}_texOff(p) texelFetch({name}_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2({name}_size) - 1), 0)
+'''
         for name in binds:
             if name in re.findall(r'^//!TEXTURE (.+)$', source, re.M):
                 glsl += f'#define {name} {name}_raw\n'

@@ -34,6 +34,14 @@ uniform vec2 MODEL24_size;
 #define MODEL24_mul 1.0
 #define MODEL24_tex(p) texture(MODEL24_raw, (p))
 #define MODEL24_texOff(p) texture(MODEL24_raw, MODEL24_pos + vec2(p) * MODEL24_pt)
+#undef MODEL21_texOff
+#define MODEL21_texOff(p) texelFetch(MODEL21_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(MODEL21_size) - 1), 0)
+#undef MODEL22_texOff
+#define MODEL22_texOff(p) texelFetch(MODEL22_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(MODEL22_size) - 1), 0)
+#undef MODEL23_texOff
+#define MODEL23_texOff(p) texelFetch(MODEL23_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(MODEL23_size) - 1), 0)
+#undef MODEL24_texOff
+#define MODEL24_texOff(p) texelFetch(MODEL24_raw, clamp(ivec2(gl_FragCoord.xy) + ivec2(p), ivec2(0), ivec2(MODEL24_size) - 1), 0)
 vec4 hook()
 {
 vec4 res = vec4(-0.1488664448261261,-0.3665277659893036,0.2105678319931030,0.2431615889072418);

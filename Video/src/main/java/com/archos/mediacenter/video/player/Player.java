@@ -183,6 +183,12 @@ public class Player implements IPlayerControl,
     private int mOpeningSeek = -1;
     private VideoColorInfo mVideoColorInfo = VideoColorInfo.UNKNOWN;
     private boolean mWaitingForGpu;
+    private UpscalingMode mOpenedUpscalingMode;
+    private final android.content.SharedPreferences.OnSharedPreferenceChangeListener mUpscalingPreferenceListener =
+            (preferences, key) -> {
+                if (UpscalingMode.PREFERENCE.equals(key))
+                    Player.this.mHandler.post(this::reopenForUpscalingRouteIfNeeded);
+            };
 
     private com.archos.mediacenter.video.utils.PlaybackDiagnostics diagnostics() {
         return com.archos.mediacenter.video.utils.PlaybackDiagnostics.get(mContext);
@@ -197,13 +203,25 @@ public class Player implements IPlayerControl,
         diagnostics().event("mode_selected", mode.label);
         PreferenceManager.getDefaultSharedPreferences(mContext).edit()
                 .putString(UpscalingMode.PREFERENCE, mode.value).apply();
-        // The render thread observes the preference and replaces only its pass graph.
+        reopenForUpscalingRouteIfNeeded();
+        // Changes between GPU modes replace only their pass graph.
+    }
+
+    private void reopenForUpscalingRouteIfNeeded() {
+        UpscalingMode mode = getUpscalingMode();
+        if (mPlaybackEnding || mOpenedUpscalingMode == null || mMediaPlayer == null
+                || !mMetadataReady || !isStandardSdrSurface()
+                || (mode == UpscalingMode.OFF) == (mOpenedUpscalingMode == UpscalingMode.OFF)) return;
+        diagnostics().event("renderer_route_change", mOpenedUpscalingMode.label + " -> " + mode.label);
+        suspendForSurface(); // retain transport state, tracks and current position
+        openVideo();
     }
 
     public UpscalingDiagnostics getUpscalingDiagnostics() {
         UpscalingRenderer renderer = mUpscalingRenderer;
         if (renderer != null) return renderer.getDiagnostics();
-        String reason = !mUpscalingUnavailable.isEmpty() ? mUpscalingUnavailable
+        String reason = getUpscalingMode() == UpscalingMode.OFF ? "disabled; platform video renderer"
+                : !mUpscalingUnavailable.isEmpty() ? mUpscalingUnavailable
                 : mSurfaceController != null && mSurfaceController.supportOpenGLVideoEffect()
                 ? "stereo effect uses its existing renderer" : "HDR passthrough or renderer unavailable";
         return new UpscalingDiagnostics(getUpscalingMode(), mVideoWidth, mVideoHeight,
@@ -214,6 +232,10 @@ public class Player implements IPlayerControl,
     }
 
     private boolean useUpscalingRenderer() {
+        return getUpscalingMode() != UpscalingMode.OFF && isStandardSdrSurface();
+    }
+
+    private boolean isStandardSdrSurface() {
         boolean hdr = mNativeHdrSource || PlayerService.sPlayerService != null
                 && PlayerService.sPlayerService.isCurrentVideoHdr();
         // A tone-mapping request is not proof that a decoder emitted SDR. Until the
@@ -253,6 +275,7 @@ public class Player implements IPlayerControl,
         if (prepared != null && prepared != mUpscalingRenderer) {
             new Thread(prepared::close, "Unused-GPU-surface").start();
         }
+        diagnostics().observeGpu(() -> getUpscalingDiagnostics().describe());
         diagnostics().capture("renderer_attached", getUpscalingDiagnostics().describe());
     }
 
@@ -467,6 +490,8 @@ public class Player implements IPlayerControl,
         mExtraMap = null;
         mResumeCtx.reset();
         mContext = context;
+        PreferenceManager.getDefaultSharedPreferences(mContext)
+                .registerOnSharedPreferenceChangeListener(mUpscalingPreferenceListener);
         mWindow = window;
         mAudioManager = (AudioManager) mContext.getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
         mEffectRenderer = new VideoEffectRenderer(mContext, VideoEffect.getDefaultType());
@@ -578,6 +603,9 @@ public class Player implements IPlayerControl,
     public void beginPlaybackExit() {
         if (mPlaybackEnding) return;
         mPlaybackEnding = true;
+        if (mUpscalingPreferenceListener != null)
+            PreferenceManager.getDefaultSharedPreferences(mContext)
+                    .unregisterOnSharedPreferenceChangeListener(mUpscalingPreferenceListener);
         ++mOpenGeneration; // reject source setup already in flight
         mHandler.removeCallbacks(mPreparedAsync);
         mHandler.removeCallbacks(mRefreshRateCheckerAsync);
@@ -696,6 +724,7 @@ public class Player implements IPlayerControl,
         // called start() previously
         log.info("openVideo: " + mUri);
         closeCurrentPlayer();
+        mOpenedUpscalingMode = getUpscalingMode();
         diagnostics().begin(mUri.getScheme() == null ? "file" : mUri.getScheme(), getUpscalingMode().value);
         if (mStopPosition != -1) {
             mResumeCtx.setSeek(mStopPosition);
@@ -1313,7 +1342,9 @@ public class Player implements IPlayerControl,
         diagnostics().capture("player_prepared", getUpscalingDiagnostics().describe());
         // A retriever may miss HDR on a network source. Reopen before the first frame
         // on the existing HDR surface path; the resume context retains session state.
-        if (mUpscalingRenderer != null && !useUpscalingRenderer()) {
+        if (mUpscalingRenderer != null && !useUpscalingRenderer()
+                || isStandardSdrSurface() && mOpenedUpscalingMode != null
+                && (mOpenedUpscalingMode == UpscalingMode.OFF) != (getUpscalingMode() == UpscalingMode.OFF)) {
             final int pendingSeek = mOpeningSeek;
             mHandler.post(() -> {
                 if (mp != mMediaPlayer) return;

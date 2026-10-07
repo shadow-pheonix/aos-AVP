@@ -7,6 +7,7 @@ stability. It cannot validate MediaCodec external YUV, HDR, lifecycle or Adreno 
 import ctypes as C
 from pathlib import Path
 import json
+import re
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,6 +71,7 @@ fbo_status = proc('glCheckFramebufferStatus', GLuint, GLuint)
 viewport = proc('glViewport', None, GLint, GLint, GLint, GLint)
 draw = proc('glDrawArrays', None, GLuint, GLint, GLint)
 read_pixels = proc('glReadPixels', None, GLint, GLint, GLint, GLint, GLuint, GLuint, C.c_void_p)
+invalidate_fbo = proc('glInvalidateFramebuffer', None, GLuint, GLint, C.POINTER(GLuint))
 get_error = proc('glGetError', GLuint)
 get_string = proc('glGetString', C.c_char_p, GLuint)
 gen_vao = proc('glGenVertexArrays', None, GLint, C.POINTER(GLuint))
@@ -141,7 +143,10 @@ class Target:
 
 
 def run(filename, target, inputs, vec2s=None, vec4s=None, ints=None):
-    target.bind(); obj = program(filename); use(obj)
+    target.bind()
+    assert all(t.texture != target.texture for t in inputs.values()), 'Output aliases an input'
+    invalidate_fbo(0x8D40, 1, (GLuint * 1)(0x8CE0))
+    obj = program(filename); use(obj)
     for unit, (key, texture) in enumerate(inputs.items()):
         active_tex(0x84C0 + unit); bind_tex(0x0DE1, texture.texture)
         uniform1(location(obj, key.encode()), unit)
@@ -199,6 +204,32 @@ def render(mode, pixels, out_w, out_h):
     return run('present.frag',Target(out_w,out_h),dict(source=result)).read()
 
 
+def check_cnn_sampling_equivalence():
+    # Compare the full trained x2 graph and downscale against the prior
+    # normalized/linear implementation, including odd dimensions and borders.
+    original_program = program
+    def normalized_reference(filename, override=None):
+        if filename.startswith('generated/fsrcnnx_'):
+            source = (ASSETS / filename).read_text()
+            source = re.sub(r'#undef \w+_texOff\n#define [^\n]+\n', '', source)
+            return original_program(filename + '-normalized-reference', source)
+        return original_program(filename, override)
+    rng = np.random.default_rng(195)
+    for w, h in [(96, 54), (97, 55), (193, 81)]:
+        y, x = np.mgrid[:h, :w]
+        gray = np.clip(.5 + .15*np.sin(x*.9 + y*.7) + .1*rng.standard_normal((h, w)), 0, 1).astype(np.float32)
+        pixels = np.stack([gray]*4, -1)
+        optimized = render('fsrcnnx', pixels, round(w*4/3), round(h*4/3))
+        globals()['program'] = normalized_reference
+        try:
+            reference = render('fsrcnnx', pixels, round(w*4/3), round(h*4/3))
+        finally:
+            globals()['program'] = original_program
+        error = np.abs(optimized-reference)
+        assert error.max() < .003 and error.mean() < .0002, (w, h, error.max(), error.mean())
+        print(f'FSRCNNX integer sampling {w}×{h}: max reference error={error.max():.6f}, mean={error.mean():.6f}', flush=True)
+
+
 def main():
     context(); vao=GLuint();gen_vao(1,C.byref(vao));bind_vao(vao.value)
     print(get_string(0x1F02).decode(),get_string(0x1F01).decode(),flush=True)
@@ -229,6 +260,7 @@ def main():
         edge=render(mode,edges,128,72)[...,:3]
         print(f'{mode}: mid-gray edge extrema {edge.min():.6f}..{edge.max():.6f}',flush=True)
         assert edge.min()>0.20 and edge.max()<0.80,(mode,'excessive edge ringing')
+    check_cnn_sampling_equivalence()
     # Validate the YUV shader math using a 2D texture surrogate. Android's external
     # sampler extension itself still needs a real MediaCodec/device test.
     yuv_shader=(ASSETS/'import_yuv.frag').read_text().replace('#extension GL_EXT_YUV_target : require','').replace('__samplerExternal2DY2YEXT','sampler2D')

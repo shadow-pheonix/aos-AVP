@@ -148,6 +148,8 @@ typedef struct priv {
 	int dropped;
 	INT64 diagnostic_last_ns;
 	UINT64 diagnostic_decoder_drops;
+	unsigned int diagnostic_output_count;
+	int diagnostic_last_output_pts;
 	UINT64 render_submit_seq; // render-thread owned; persists across pause/seek/flush
 	int video_frame_rate_num;
 	int video_frame_rate_den;
@@ -1971,6 +1973,17 @@ DBGCV3 CLOG("sfdec_read <- size %dx%d (%d)", read_out.size.width, read_out.size.
 		}
 		ret = XDM_id_get( &p->XDM_ctx, time, &out_type, &out_ID );
 
+		int64_t diagnostic_pts_step = p->diagnostic_output_count ? (int64_t)out_time - p->diagnostic_last_output_pts : 0;
+		int64_t diagnostic_step_limit = p->video_frame_rate_num > 0 ?
+			MAX(100, 3000LL * p->video_frame_rate_den / p->video_frame_rate_num) : 100;
+		if (p->diagnostic_output_count < 64 || llabs(diagnostic_pts_step) > diagnostic_step_limit || took > 100) {
+			playback_diagnostic("decoder_output_diag: n=%u decoder_pts_ms=%d selected_pts_ms=%d pts_step_ms=%lld read_ms=%d input_seen=%d repair=%d input_monotonic=%d",
+				p->diagnostic_output_count, time, out_time, (long long)diagnostic_pts_step, took,
+				p->pts_input_seen, p->repair_decode_order_pts && p->pts_input_monotonic, p->pts_input_monotonic);
+		}
+		p->diagnostic_output_count++;
+		p->diagnostic_last_output_pts = out_time;
+
 		f->media_time = out_time;
 		f->media_time_valid = out_time != -1;
 		f->time = out_time == -1 ? -1 : RST_TO_TS_TIME(out_time, int);
@@ -2202,6 +2215,7 @@ retry_decoder_open:
 	p->pts_input_seen = 0;
 	p->pts_input_last = INT_MIN;
 	p->pts_repair_logged = 0;
+	p->diagnostic_output_count = 0;
 	p->input_eos = p->output_eos = 0;
 	p->presentation_end_ns = 0;
 	if( p->repair_decode_order_pts ) {
@@ -2555,6 +2569,7 @@ DBGCV	CLOG();
 	p->pts_input_seen = 0;
 	p->pts_input_last = INT_MIN;
 	p->pts_repair_logged = 0;
+	p->diagnostic_output_count = 0;
 	int codec_flushed = sfdec_flush(p->sfdec) == 0;
 	if (!codec_flushed) p->locked.error = 1;
 	p->input_eos = p->output_eos = 0;

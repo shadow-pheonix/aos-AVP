@@ -7,6 +7,7 @@ import java.nio.Buffer;
 final class GlTarget implements AutoCloseable {
     final int width, height, components, texture, framebuffer;
     final boolean float32;
+    private static final int[] OVERWRITTEN_ATTACHMENT = {GLES31.GL_COLOR_ATTACHMENT0};
 
     GlTarget(int width, int height, int components) {
         this(width, height, components, null, true);
@@ -93,6 +94,9 @@ final class GlTarget implements AutoCloseable {
     void bind() {
         GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, framebuffer);
         GLES31.glViewport(0, 0, width, height);
+        // Every caller fills this output with a fullscreen pass. Do not reload
+        // obsolete contents from the previous frame on a tile-based GPU.
+        GLES31.glInvalidateFramebuffer(GLES31.GL_FRAMEBUFFER, 1, OVERWRITTEN_ATTACHMENT, 0);
     }
 
     long estimatedBytes() {
