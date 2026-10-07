@@ -1,0 +1,16 @@
+Nova Upscaling playback diagnostics test APK
+Build date: 2026-10-07 UTC
+Source: https://github.com/shadow-pheonix/aos-AVP/tree/ce115f45cdb7dc1c197689ca048884749fde2d3d
+Package: org.courville.nova
+Version: 6.5.4-upscaling-diag2 (6050005)
+Variant: noamazonDebug, universal
+Architectures: arm64-v8a, armeabi-v7a, x86, x86_64 (22 native libraries each)
+Android: API 23 minimum, target API 36, compile SDK 37
+Native toolchain: Android NDK r27c (27.2.12479018)
+Signature: valid, same debug key as previous test APK
+Signing certificate SHA-256: 1741729a039d59de3611eca6f8064001f6da898a878e4ef61b98f8d0ff224bd7
+SHA-256: 77e79a769c3b8ebc0847fde3504bc7e43007f6629338135b84a716bd70e00891
+Bytes: 103216070
+Validation: 49 selected tests passed, lint passed; 38 shader programs and three graphs passed headless GPU tests; ZIP/assets/native runtime dependencies verified.
+Device limitations: No Android device attached. Galaxy Tab S9 A/V sync and playback need device validation. GPU fence latency is not a GPU timer query.
+Diagnostics: Player Settings > Upscaling diagnostics > Export diagnostics. Retained snapshot/journal, app-only native logs and available Android process-exit traces are included.
