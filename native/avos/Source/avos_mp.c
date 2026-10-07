@@ -304,6 +304,12 @@ int avos_mp_fillmetadata(avos_mp_t *mp, int type, uint64_t size, ID3_TAG *id3_ta
 		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_S3DMODE, videop->stereo_mode);
 		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_DECODER, decoder);
 		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_COLOR_TRC, videop->color_trc);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_COLOR_SPACE, videop->color_space);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_COLOR_RANGE, videop->color_range);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_CHROMA_X, videop->chroma_x_shift_plus_one);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_CHROMA_Y, videop->chroma_y_shift_plus_one);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_CHROMA_LOCATION, videop->chroma_location);
+		ADD_INT(gap_key + AVOS_MP_METADATA_VIDEO_TRACK_COMPONENT_DEPTH, videop->component_depth);
 	}
 	if (av && type == TYPE_AUD)
 		av->as_max = 1;

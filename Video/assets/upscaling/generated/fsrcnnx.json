@@ -1,0 +1,410 @@
+{
+  "passes": [
+    {
+      "file": "fsrcnnx_00.frag",
+      "binds": [
+        "LUMA"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "FEATURE1",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "feature map 1"
+    },
+    {
+      "file": "fsrcnnx_01.frag",
+      "binds": [
+        "LUMA"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "FEATURE2",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "feature map 2"
+    },
+    {
+      "file": "fsrcnnx_02.frag",
+      "binds": [
+        "LUMA"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "FEATURE3",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "feature map 3"
+    },
+    {
+      "file": "fsrcnnx_03.frag",
+      "binds": [
+        "LUMA"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "FEATURE4",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "feature map 4"
+    },
+    {
+      "file": "fsrcnnx_04.frag",
+      "binds": [
+        "FEATURE1",
+        "FEATURE2",
+        "FEATURE3",
+        "FEATURE4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL21",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 1_1"
+    },
+    {
+      "file": "fsrcnnx_05.frag",
+      "binds": [
+        "FEATURE1",
+        "FEATURE2",
+        "FEATURE3",
+        "FEATURE4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL22",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 1_2"
+    },
+    {
+      "file": "fsrcnnx_06.frag",
+      "binds": [
+        "FEATURE1",
+        "FEATURE2",
+        "FEATURE3",
+        "FEATURE4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL23",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 1_3"
+    },
+    {
+      "file": "fsrcnnx_07.frag",
+      "binds": [
+        "FEATURE1",
+        "FEATURE2",
+        "FEATURE3",
+        "FEATURE4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL24",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 1_4"
+    },
+    {
+      "file": "fsrcnnx_08.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL1",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 2_1"
+    },
+    {
+      "file": "fsrcnnx_09.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL2",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 2_2"
+    },
+    {
+      "file": "fsrcnnx_10.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL3",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 2_3"
+    },
+    {
+      "file": "fsrcnnx_11.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL4",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 2_4"
+    },
+    {
+      "file": "fsrcnnx_12.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL21",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 3_1"
+    },
+    {
+      "file": "fsrcnnx_13.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL22",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 3_2"
+    },
+    {
+      "file": "fsrcnnx_14.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL23",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 3_3"
+    },
+    {
+      "file": "fsrcnnx_15.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL24",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 3_4"
+    },
+    {
+      "file": "fsrcnnx_16.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL1",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 4_1"
+    },
+    {
+      "file": "fsrcnnx_17.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL2",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 4_2"
+    },
+    {
+      "file": "fsrcnnx_18.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL3",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 4_3"
+    },
+    {
+      "file": "fsrcnnx_19.frag",
+      "binds": [
+        "MODEL21",
+        "MODEL22",
+        "MODEL23",
+        "MODEL24"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "MODEL4",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "mapping 4_4"
+    },
+    {
+      "file": "fsrcnnx_20.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4",
+        "FEATURE1"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "RES1",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "sub-band residuals 1"
+    },
+    {
+      "file": "fsrcnnx_21.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4",
+        "FEATURE2"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "RES2",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "sub-band residuals 2"
+    },
+    {
+      "file": "fsrcnnx_22.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4",
+        "FEATURE3"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "RES3",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "sub-band residuals 3"
+    },
+    {
+      "file": "fsrcnnx_23.frag",
+      "binds": [
+        "MODEL1",
+        "MODEL2",
+        "MODEL3",
+        "MODEL4",
+        "FEATURE4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "RES4",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "sub-band residuals 4"
+    },
+    {
+      "file": "fsrcnnx_24.frag",
+      "binds": [
+        "RES1",
+        "RES2",
+        "RES3",
+        "RES4"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "SUBCONV1",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "sub-pixel convolution 1"
+    },
+    {
+      "file": "fsrcnnx_25.frag",
+      "binds": [
+        "SUBCONV1"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "",
+      "width": "LUMA.w 2 *",
+      "height": "LUMA.h 2 *",
+      "components": 1,
+      "description": "aggregation"
+    }
+  ],
+  "textures": []
+}

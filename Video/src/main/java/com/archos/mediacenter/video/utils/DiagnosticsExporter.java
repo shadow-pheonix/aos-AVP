@@ -111,6 +111,10 @@ public final class DiagnosticsExporter {
         info.append("max_heap_mb=").append(Runtime.getRuntime().maxMemory() / (1024 * 1024)).append('\n');
         info.append("locale=").append(Locale.getDefault().toLanguageTag()).append('\n');
         info.append("log_directory_present=").append(logDir.isDirectory()).append('\n');
+        com.archos.mediacenter.video.player.Player player = com.archos.mediacenter.video.player.Player.sPlayer;
+        if (player != null) info.append("\n").append(player.getUpscalingDiagnostics().describe()).append('\n');
+        else info.append("upscaling_selected=").append(androidx.preference.PreferenceManager
+                .getDefaultSharedPreferences(context).getString("player_upscaling_mode", "ravu")).append('\n');
         return info.toString();
     }
 

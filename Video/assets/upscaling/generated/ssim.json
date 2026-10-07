@@ -1,0 +1,61 @@
+{
+  "passes": [
+    {
+      "file": "ssim_00.frag",
+      "binds": [
+        "HOOKED"
+      ],
+      "hook": "POSTKERNEL",
+      "float32": true,
+      "save": "LOWRES",
+      "width": "HOOKED.w",
+      "height": "NATIVE_CROPPED.h",
+      "components": 4,
+      "description": "SSSR Downscaling I"
+    },
+    {
+      "file": "ssim_01.frag",
+      "binds": [
+        "LOWRES"
+      ],
+      "hook": "POSTKERNEL",
+      "float32": true,
+      "save": "LOWRES",
+      "width": "NATIVE_CROPPED.w",
+      "height": "NATIVE_CROPPED.h",
+      "components": 4,
+      "description": "SSSR Downscaling II"
+    },
+    {
+      "file": "ssim_02.frag",
+      "binds": [
+        "PREKERNEL",
+        "LOWRES"
+      ],
+      "hook": "POSTKERNEL",
+      "float32": true,
+      "save": "var",
+      "width": "NATIVE_CROPPED.w",
+      "height": "NATIVE_CROPPED.h",
+      "components": 2,
+      "description": "SSSR var"
+    },
+    {
+      "file": "ssim_03.frag",
+      "binds": [
+        "HOOKED",
+        "PREKERNEL",
+        "LOWRES",
+        "var"
+      ],
+      "hook": "POSTKERNEL",
+      "float32": false,
+      "save": "",
+      "width": "HOOKED.w",
+      "height": "HOOKED.h",
+      "components": 4,
+      "description": "SSSR final pass"
+    }
+  ],
+  "textures": []
+}

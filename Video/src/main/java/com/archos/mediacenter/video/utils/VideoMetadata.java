@@ -84,6 +84,12 @@ public class VideoMetadata implements Serializable {
             s3dMode = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_S3D);
             decoder = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_DECODER);
             colorTrc = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_COLOR_TRC);
+            colorSpace = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_COLOR_SPACE);
+            colorRange = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_COLOR_RANGE);
+            chromaX = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_CHROMA_X);
+            chromaY = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_CHROMA_Y);
+            chromaLocation = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_CHROMA_LOCATION);
+            componentDepth = getMetadataInt(data, gapKey + IMediaPlayer.METADATA_KEY_VIDEO_TRACK_COMPONENT_DEPTH);
         }
         
         VideoTrack(IMediaMetadataRetriever retriever) {
@@ -99,6 +105,7 @@ public class VideoMetadata implements Serializable {
             s3dMode = getMetadataRetrieverInt(retriever, gapKey + IMediaMetadataRetriever.METADATA_KEY_VIDEO_TRACK_S3D_MODE);
             decoder = LibAvos.MP_DECODER_ANY;
             colorTrc = 0;
+            colorSpace = colorRange = chromaX = chromaY = chromaLocation = componentDepth = 0;
         }
 
         public final String format;
@@ -111,6 +118,7 @@ public class VideoMetadata implements Serializable {
         public final int fpsScale;
         public final int s3dMode;
         public final int decoder;
+        public final int colorSpace, colorRange, chromaX, chromaY, chromaLocation, componentDepth;
         public final int colorTrc; // AVCOL_TRC_* (e.g. 16=SMPTE2084/PQ, 18=HLG)
     }
 

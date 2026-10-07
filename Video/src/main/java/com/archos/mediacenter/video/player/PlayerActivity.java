@@ -141,6 +141,7 @@ import com.archos.mediacenter.video.utils.VideoMetadata;
 import com.archos.mediacenter.video.utils.VideoMetadata.AudioTrack;
 import com.archos.mediacenter.video.utils.VideoMetadata.SubtitleTrack;
 import com.archos.mediacenter.video.utils.VideoMetadata.VideoTrack;
+import com.archos.mediacenter.video.player.upscaling.UpscalingMode;
 import com.archos.mediacenter.video.utils.VideoPreferencesActivity;
 import com.archos.mediacenter.video.utils.VideoPreferencesCommon;
 import com.archos.mediacenter.video.utils.VideoUtils;
@@ -262,6 +263,9 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     private static final int MENU_AUDIO_SPEED_ID = 307;
     private static final int MENU_SPATIALIZATION_ID = 308;
     private static final int MENU_HDR_TO_SDR_ID = 309;
+    private static final int MENU_UPSCALING_GROUP = 40;
+    private static final int MENU_UPSCALING_BASE = 401;
+    private static final int MENU_UPSCALING_DIAGNOSTICS = 405;
 
     // Notification types (keep in sync with res/values/arrays.xml:pref_notification_mode_entries)
     private static final int NOTIFICATION_MODE_ALL = 0;
@@ -2459,6 +2463,28 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 hdrCard.addOtherView(hdrMenu);
             }
 
+            TVCardView upscalingCard = tma.createAndAddView(
+                    ResourcesCompat.getDrawable(getResources(), R.drawable.tv_format, null),
+                    null, getString(R.string.player_upscaling_title));
+            upscalingCard.setText(mPlayer.getUpscalingMode().label);
+            final TVMenu upscalingMenu = tma.createTVMenu();
+            upscalingMenu.setItems(R.array.player_upscaling_entries, mPlayer.getUpscalingMode().ordinal(), true);
+            upscalingMenu.setOnItemClickListener(v -> {
+                int index = upscalingMenu.getItemPostion(v);
+                if (index >= 0 && index < UpscalingMode.values().length) {
+                    mPlayer.setUpscalingMode(UpscalingMode.values()[index]);
+                    upscalingMenu.unCheckAll();
+                    ((TVMenuItem) v).setChecked(true);
+                    upscalingCard.setText(mPlayer.getUpscalingMode().label);
+                }
+            });
+            upscalingCard.addOtherView(upscalingMenu);
+            TVCardView upscalingInfo = tma.createAndAddView(null,
+                    ResourcesCompat.getDrawable(getResources(), R.drawable.tv_info, null),
+                    getString(R.string.player_upscaling_diagnostics));
+            upscalingInfo.setText2(mPlayer.getUpscalingDiagnostics().describe());
+            upscalingInfo.setOnSwitchClickListener(v -> showUpscalingDiagnostics());
+
             // Scale (format) type
             tcv = tma.createAndAddView(ResourcesCompat.getDrawable(getResources(), R.drawable.tv_format, null), null,
                                        getResources().getString( R.string.pref_format_mode_title));
@@ -2706,6 +2732,14 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         return true;
     }
 
+    private void showUpscalingDiagnostics() {
+        if (mPlayer == null) return;
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(R.string.player_upscaling_diagnostics)
+                .setMessage(mPlayer.getUpscalingDiagnostics().describe())
+                .setPositiveButton(android.R.string.ok, null).show();
+    }
+
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         menu.clear();
@@ -2758,6 +2792,18 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             //------------------------------------------------------------------
             // Finally add the other items (which will be available in the menu)
             //------------------------------------------------------------------
+            android.view.SubMenu playerSettings = menu.addSubMenu(R.string.menu_player_settings);
+            android.view.SubMenu upscalingMenu = playerSettings.addSubMenu(R.string.player_upscaling_title);
+            String[] upscalingLabels = getResources().getStringArray(R.array.player_upscaling_entries);
+            for (UpscalingMode mode : UpscalingMode.values()) {
+                upscalingMenu.add(MENU_UPSCALING_GROUP, MENU_UPSCALING_BASE + mode.ordinal(),
+                        Menu.NONE, upscalingLabels[mode.ordinal()]).setCheckable(true)
+                        .setChecked(mPlayer != null && mPlayer.getUpscalingMode() == mode);
+            }
+            upscalingMenu.setGroupCheckable(MENU_UPSCALING_GROUP, true, true);
+            playerSettings.add(Menu.NONE, MENU_UPSCALING_DIAGNOSTICS, Menu.NONE,
+                    R.string.player_upscaling_diagnostics);
+
             menuItem = menu.add(MENU_OTHER_GROUP, MENU_PLAYMODE_ID, Menu.NONE, R.string.pref_play_mode_title);
             if (menuItem != null) {
                 menuItem.setIcon(R.drawable.ic_menu_playmode);
@@ -2850,11 +2896,22 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         }
         /*if(menu.findItem(MENU_WINDOW_MODE)!=null)
             menu.findItem(MENU_WINDOW_MODE).setVisible(mPreferences.getBoolean(KEY_ADVANCED_VIDEO_ENABLED, false));*/
+        if (mPlayer != null) for (UpscalingMode mode : UpscalingMode.values()) {
+            MenuItem modeItem = menu.findItem(MENU_UPSCALING_BASE + mode.ordinal());
+            if (modeItem != null) modeItem.setChecked(mPlayer.getUpscalingMode() == mode);
+        }
         return super.onPrepareOptionsMenu(menu);
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
+        int upscalingIndex = item.getItemId() - MENU_UPSCALING_BASE;
+        if (upscalingIndex >= 0 && upscalingIndex < UpscalingMode.values().length && mPlayer != null) {
+            mPlayer.setUpscalingMode(UpscalingMode.values()[upscalingIndex]);
+            item.setChecked(true);
+            return true;
+        }
+        if (item.getItemId() == MENU_UPSCALING_DIAGNOSTICS) { showUpscalingDiagnostics(); return true; }
         switch (item.getItemId()) {
             case MENU_LOCK_ID:
                 mPlayerController.lock();

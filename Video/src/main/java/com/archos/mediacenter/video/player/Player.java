@@ -49,6 +49,10 @@ import android.view.WindowManager.LayoutParams;
 import com.archos.filecorelibrary.FileUtils;
 import com.archos.filecorelibrary.NetworkInitialization;
 import com.archos.mediacenter.video.CustomApplication;
+import com.archos.mediacenter.video.player.upscaling.UpscalingRenderer;
+import com.archos.mediacenter.video.player.upscaling.UpscalingMode;
+import com.archos.mediacenter.video.player.upscaling.UpscalingDiagnostics;
+import com.archos.mediacenter.video.player.upscaling.VideoColorInfo;
 import com.archos.mediacenter.video.R;
 import com.archos.mediacenter.video.utils.CodecDiscovery;
 import com.archos.mediacenter.video.utils.VideoMetadata;
@@ -173,6 +177,72 @@ public class Player implements IPlayerControl,
     private static float mCurrentFps = 0.0f;
 
     private VideoEffectRenderer mEffectRenderer;
+    private volatile UpscalingRenderer mUpscalingRenderer;
+    private String mUpscalingUnavailable = "";
+    private boolean mNativeHdrSource;
+    private int mOpeningSeek = -1;
+    private VideoColorInfo mVideoColorInfo = VideoColorInfo.UNKNOWN;
+
+    public UpscalingMode getUpscalingMode() {
+        return UpscalingMode.fromPreference(PreferenceManager.getDefaultSharedPreferences(mContext)
+                .getString(UpscalingMode.PREFERENCE, "ravu"));
+    }
+
+    public void setUpscalingMode(UpscalingMode mode) {
+        PreferenceManager.getDefaultSharedPreferences(mContext).edit()
+                .putString(UpscalingMode.PREFERENCE, mode.value).apply();
+        // The render thread observes the preference and replaces only its pass graph.
+    }
+
+    public UpscalingDiagnostics getUpscalingDiagnostics() {
+        UpscalingRenderer renderer = mUpscalingRenderer;
+        if (renderer != null) return renderer.getDiagnostics();
+        String reason = !mUpscalingUnavailable.isEmpty() ? mUpscalingUnavailable
+                : mSurfaceController != null && mSurfaceController.supportOpenGLVideoEffect()
+                ? "stereo effect uses its existing renderer" : "HDR passthrough or renderer unavailable";
+        return new UpscalingDiagnostics(getUpscalingMode(), mVideoWidth, mVideoHeight,
+                mSurfaceController == null ? 0 : mSurfaceController.getViewWidth(),
+                mSurfaceController == null ? 0 : mSurfaceController.getViewHeight(), false,
+                mDisplayTexture == null ? "Android SurfaceView / decoder" : "OpenGL ES stereo effects",
+                "Android decoder conversion", reason, 0, 0, -1);
+    }
+
+    private boolean useUpscalingRenderer() {
+        boolean hdr = mNativeHdrSource || PlayerService.sPlayerService != null
+                && PlayerService.sPlayerService.isCurrentVideoHdr();
+        // A tone-mapping request is not proof that a decoder emitted SDR. Until the
+        // output transfer is verified, retain Nova's HDR SurfaceFlinger composition path.
+        return mSurfaceHolder != null && mDisplayTexture == null && !hdr;
+    }
+
+    private void attachVideoSurface(IMediaPlayer player) {
+        if (mSurfaceHolder != null && mSurfaceHolder.getSurface().isValid()) {
+            if (useUpscalingRenderer()) {
+                try {
+                    mUpscalingRenderer = new UpscalingRenderer(mContext, mSurfaceHolder.getSurface());
+                    mUpscalingRenderer.setSource(mVideoWidth, mVideoHeight, mVideoColorInfo);
+                    mSurfaceController.setGpuRenderingEnabled(true);
+                    player.setSurface(mUpscalingRenderer.getDecoderSurface());
+                    return;
+                } catch (RuntimeException e) {
+                    mUpscalingUnavailable = "GPU renderer unavailable: " + e.getMessage();
+                    log.warn("{}", mUpscalingUnavailable);
+                    if (mUpscalingRenderer != null) { mUpscalingRenderer.close(); mUpscalingRenderer = null; }
+                    mSurfaceController.setGpuRenderingEnabled(false);
+                }
+            }
+            player.setDisplay(mSurfaceHolder);
+        } else if (mVideoTexture != null) {
+            Surface surface = new Surface(mVideoTexture);
+            try { player.setSurface(surface); } finally { surface.release(); }
+        }
+    }
+
+    private void updateUpscalingSource() {
+        if (mUpscalingRenderer != null)
+            mUpscalingRenderer.setSource(mVideoWidth, mVideoHeight, mVideoColorInfo);
+    }
+
 
     /*
      * Archos
@@ -433,6 +503,9 @@ public class Player implements IPlayerControl,
         if (mPlaybackEnding) return; // a delayed service/source callback must not revive this player
         stopPlayback();
         reset();
+        mNativeHdrSource = false;
+        mVideoColorInfo = VideoColorInfo.UNKNOWN;
+        mUpscalingUnavailable = "";
         mMetadataReady = false;
         mHasAudio = false;
         mUri = uri;
@@ -494,6 +567,8 @@ public class Player implements IPlayerControl,
         if (mSurfaceController != null) mSurfaceController.setMediaPlayer(null);
         if (mEffectRenderer != null) mEffectRenderer.pause();
         if (old != null) old.release(); // interrupts prepare/seek and joins rendering
+        if (mUpscalingRenderer != null) { mUpscalingRenderer.close(); mUpscalingRenderer = null; }
+        if (mSurfaceController != null) mSurfaceController.setGpuRenderingEnabled(false);
     }
 
     private void suspendForSurface() {
@@ -587,6 +662,7 @@ public class Player implements IPlayerControl,
         if (mStopPosition != -1) {
             mResumeCtx.setSeek(mStopPosition);
         }
+        mOpeningSeek = mResumeCtx.getSeek();
         final int generation = mOpenGeneration;
         final Uri uri = mUri;
         final Map<String, String> headers = mExtraMap == null ? null : new HashMap<>(mExtraMap);
@@ -616,11 +692,8 @@ public class Player implements IPlayerControl,
                 mHandler.post(() -> {
                     if (generation != mOpenGeneration || player != mMediaPlayer) return;
                     try {
-                        if (mSurfaceHolder != null && mSurfaceHolder.getSurface().isValid()) {
-                            player.setDisplay(mSurfaceHolder);
-                        } else if (mVideoTexture != null) {
-                            Surface surface = new Surface(mVideoTexture);
-                            try { player.setSurface(surface); } finally { surface.release(); }
+                        if ((mSurfaceHolder != null && mSurfaceHolder.getSurface().isValid()) || mVideoTexture != null) {
+                            attachVideoSurface(player);
                         } else {
                             suspendForSurface();
                             return;
@@ -735,6 +808,7 @@ public class Player implements IPlayerControl,
         if (log.isDebugEnabled()) log.debug("CONFIG surfaceChanged: {}x{}", w, h);
         mSurfaceWidth = w;
         mSurfaceHeight = h;
+        if (mUpscalingRenderer != null) mUpscalingRenderer.requestRedraw();
         boolean isValidState = (mCurrentState == STATE_PREPARED);
         boolean hasValidSize = (mVideoWidth == w && mVideoHeight == h);
         if (mMediaPlayer != null && isValidState && hasValidSize) {
@@ -1115,6 +1189,13 @@ public class Player implements IPlayerControl,
                 mPlayerListener.onOSDUpdate();
             }
             mVideoMetadata.setData(data);
+            VideoMetadata.VideoTrack videoColor = mVideoMetadata.getVideoTrack();
+            if (videoColor != null) {
+                mNativeHdrSource = videoColor.colorTrc == 16 || videoColor.colorTrc == 18;
+                mVideoColorInfo = new VideoColorInfo(videoColor.colorSpace, videoColor.colorRange,
+                        videoColor.chromaX, videoColor.chromaY, videoColor.chromaLocation, mNativeHdrSource, videoColor.componentDepth);
+                updateUpscalingSource();
+            }
 
             if (mPlayerListener != null) {
                 if (data.has(IMediaPlayer.METADATA_KEY_NB_VIDEO_TRACK))
@@ -1148,6 +1229,21 @@ public class Player implements IPlayerControl,
         mCanPause = mCanSeekForward = mCanSeekBack = true;
         if (log.isDebugEnabled()) log.debug("onPrepared: mCanPause={}, mCanSeekForward={}, mCanSeekBack={} -> handleMetadata", mCanPause, mCanSeekForward, mCanSeekBack);
         handleMetadata(mMediaPlayer);
+        // A retriever may miss HDR on a network source. Reopen before the first frame
+        // on the existing HDR surface path; the resume context retains session state.
+        if (mUpscalingRenderer != null && !useUpscalingRenderer()) {
+            final int pendingSeek = mOpeningSeek;
+            mHandler.post(() -> {
+                if (mp != mMediaPlayer) return;
+                // No frame has played yet: querying the decoder position here could
+                // replace a pending resume offset with zero after setStartTime consumed it.
+                closeCurrentPlayer();
+                mStopPosition = pendingSeek;
+                if (pendingSeek >= 0) mResumeCtx.setSeek(pendingSeek);
+                openVideo();
+            });
+            return;
+        }
 
         // No audio tracks is a valid video session, including failed/absent audio decode.
         mMetadataReady = true;
@@ -1289,6 +1385,7 @@ public class Player implements IPlayerControl,
         if (mp != mMediaPlayer) return;
         mVideoWidth = width;
         mVideoHeight = height;
+        updateUpscalingSource();
         if (log.isDebugEnabled()) log.debug("CONFIG OnVideoSizeChanged: {}x{}", mVideoWidth, mVideoHeight);
         mSurfaceController.setVideoSize(mVideoWidth, mVideoHeight, mVideoAspect);
         if (mEffectRenderer != null)

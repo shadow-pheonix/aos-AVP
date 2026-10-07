@@ -42,6 +42,7 @@
 #ifdef CONFIG_FFMPEG_PARSER
 
 #include <libavutil/frame.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/mathematics.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -602,6 +603,13 @@ serprintf("FF: parse H264 SPS\n");
 				video->color_trc       = codecpar->color_trc;
 				video->color_space     = codecpar->color_space;
 				video->color_range     = codecpar->color_range;
+				const AVPixFmtDescriptor *pixel_desc = av_pix_fmt_desc_get(codecpar->format);
+				if (pixel_desc && !(pixel_desc->flags & AV_PIX_FMT_FLAG_RGB) && pixel_desc->nb_components >= 3) {
+					video->chroma_x_shift_plus_one = pixel_desc->log2_chroma_w + 1;
+					video->chroma_y_shift_plus_one = pixel_desc->log2_chroma_h + 1;
+					video->component_depth = pixel_desc->comp[0].depth;
+				}
+				video->chroma_location = codecpar->chroma_location;
 
 				switch( video->format ) {
 				case VIDEO_FORMAT_MPEG:

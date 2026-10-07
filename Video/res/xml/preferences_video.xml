@@ -28,6 +28,21 @@
             app:iconSpaceReserved="false"/>
     </PreferenceCategory>
     <PreferenceCategory
+        android:key="preferences_category_player"
+        android:title="@string/menu_player_settings"
+        app:iconSpaceReserved="false">
+        <ListPreference
+            android:key="player_upscaling_mode"
+            android:title="@string/player_upscaling_title"
+            android:dialogTitle="@string/player_upscaling_title"
+            android:entries="@array/player_upscaling_entries"
+            android:entryValues="@array/player_upscaling_values"
+            android:defaultValue="ravu"
+            android:persistent="true"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+    </PreferenceCategory>
+    <PreferenceCategory
         android:key="preferences_category_video"
         android:title="@string/preferences_category_video"
         app:iconSpaceReserved="false">

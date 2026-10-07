@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_upscaling_title">Upscaling</string>
+    <string name="player_upscaling_diagnostics">Upscaling diagnostics</string>
+    <string name="player_upscaling_summary">Reconstruct lower-resolution video at the render resolution. RAVU HQ prioritizes quality.</string>
+    <string-array name="player_upscaling_entries">
+        <item>Off</item>
+        <item>RAVU HQ</item>
+        <item>FSRCNNX Ultra</item>
+        <item>SGSR1 Efficient</item>
+    </string-array>
+    <string-array name="player_upscaling_values" translatable="false">
+        <item>off</item><item>ravu</item><item>fsrcnnx</item><item>sgsr1</item>
+    </string-array>
+</resources>

@@ -669,6 +669,11 @@ typedef struct _video_props {
     int color_space;        // AVCOL_SPC_* (e.g. BT709=1, BT2020_NCL=9)
     int color_range;        // AVCOL_RANGE_* (MPEG=1/limited, JPEG=2/full)
 
+    int chroma_x_shift_plus_one; // zero means unknown; used by GPU chroma reconstruction
+    int chroma_y_shift_plus_one;
+    int chroma_location;         // AVCHROMA_LOC_*
+    int component_depth;         // decoded YUV sample precision; zero means unknown
+
     int frame_rate_den;
     int frame_rate_num;
 } VIDEO_PROPERTIES;

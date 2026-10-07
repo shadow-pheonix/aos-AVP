@@ -105,4 +105,13 @@
             android:action="android.intent.action.VIEW"
             android:data="https://github.com/thegrizzlylabs/sardine-android" />
     </PreferenceScreen>
+    <PreferenceScreen android:title="RAVU-Zoom AR / SSimSuperRes" android:summary="LGPL v3+" app:iconSpaceReserved="false">
+        <intent android:action="android.intent.action.VIEW" android:data="https://github.com/bjin/mpv-prescalers" />
+    </PreferenceScreen>
+    <PreferenceScreen android:title="FSRCNNX" android:summary="GPL v3+" app:iconSpaceReserved="false">
+        <intent android:action="android.intent.action.VIEW" android:data="https://github.com/igv/FSRCNN-TensorFlow" />
+    </PreferenceScreen>
+    <PreferenceScreen android:title="Qualcomm Snapdragon GSR v1" android:summary="BSD-3-Clause" app:iconSpaceReserved="false">
+        <intent android:action="android.intent.action.VIEW" android:data="https://github.com/SnapdragonStudios/snapdragon-gsr" />
+    </PreferenceScreen>
 </PreferenceScreen>

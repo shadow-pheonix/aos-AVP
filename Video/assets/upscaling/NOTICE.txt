@@ -1,0 +1,31 @@
+Nova GPU upscaling shader sources and attribution
+
+RAVU-Zoom AR r3 (luma): bjin/mpv-prescalers
+Commit b3f0a59d68f33b7162051ea5970a5169558f0ea2
+https://github.com/bjin/mpv-prescalers
+LGPL-3.0-or-later. Original shader and LUT source: Video/shaders/upstream/ravu-zoom-ar-r3.hook
+
+SSimSuperRes: Shiandow, maintained in igv's gist
+Revision a8feaac97835c211fa3ebcabf90db149a254187b
+https://gist.github.com/igv/2364ffa6e81540f29cb7ab4c9bc05b6b
+LGPL-3.0-or-later. Original: Video/shaders/upstream/SSimSuperRes.glsl
+
+FSRCNNX x2 16-0-4-1: Copyright (C) 2017-2021 igv
+Release 1.1 of igv/FSRCNN-TensorFlow
+https://github.com/igv/FSRCNN-TensorFlow/releases/tag/1.1
+GPL-3.0-or-later. Original: Video/shaders/upstream/FSRCNNX_x2_16-0-4-1.glsl
+
+Snapdragon Game Super Resolution v1:
+Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
+Commit d926f074bcb9d714e179f1ce0fcb9ee2eeb5074e
+https://github.com/SnapdragonStudios/snapdragon-gsr
+BSD-3-Clause. Original: Video/shaders/upstream/sgsr1_shader_mobile.frag
+
+Full licenses are bundled in upscaling/licenses. SOURCE-SHA256.txt identifies
+all pinned original sources. Video/shaders/generate_upscaling.py reproducibly
+wraps the mpv shader bodies, stores the LUTs as half-float texture data, and
+adapts SGSR1 to GLES 3.1 / constant gather component / legal constructor syntax.
+SGSR1 runs Qualcomm's supported RGBY mode with luma in alpha, original threshold
+8/255 and sharpness 2.0. Its adaptive reconstruction math is unchanged.
+FSRCNNX's trained shader is unchanged; Nova's separate chroma combination pass
+limits luma overshoot to 2% of the local source envelope to prevent edge halos.

@@ -1,0 +1,33 @@
+{
+  "passes": [
+    {
+      "file": "ravu_00.frag",
+      "binds": [
+        "HOOKED",
+        "ravu_zoom_lut3",
+        "ravu_zoom_lut3_ar"
+      ],
+      "hook": "LUMA",
+      "float32": false,
+      "save": "",
+      "width": "OUTPUT.w",
+      "height": "OUTPUT.h",
+      "components": 1,
+      "description": ""
+    }
+  ],
+  "textures": [
+    {
+      "name": "ravu_zoom_lut3",
+      "width": 45,
+      "height": 2592,
+      "file": "ravu_zoom_lut3.bin"
+    },
+    {
+      "name": "ravu_zoom_lut3_ar",
+      "width": 18,
+      "height": 2592,
+      "file": "ravu_zoom_lut3_ar.bin"
+    }
+  ]
+}

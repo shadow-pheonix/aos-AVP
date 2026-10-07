@@ -365,7 +365,13 @@ public interface IMediaPlayer {
     public static final int METADATA_KEY_VIDEO_TRACK_FPS_RATE = 12;
     public static final int METADATA_KEY_VIDEO_TRACK_FPS_SCALE = 13;
     public static final int METADATA_KEY_VIDEO_TRACK_COLOR_TRC = 14;
-    public static final int METADATA_KEY_VIDEO_TRACK_MAX = 15;
+    public static final int METADATA_KEY_VIDEO_TRACK_COLOR_SPACE = 15;
+    public static final int METADATA_KEY_VIDEO_TRACK_COLOR_RANGE = 16;
+    public static final int METADATA_KEY_VIDEO_TRACK_CHROMA_X = 17;
+    public static final int METADATA_KEY_VIDEO_TRACK_CHROMA_Y = 18;
+    public static final int METADATA_KEY_VIDEO_TRACK_CHROMA_LOCATION = 19;
+    public static final int METADATA_KEY_VIDEO_TRACK_COMPONENT_DEPTH = 20;
+    public static final int METADATA_KEY_VIDEO_TRACK_MAX = 21;
 
     public static final int METADATA_KEY_AUDIO_TRACK = 20000;
     public static final int METADATA_KEY_AUDIO_TRACK_NAME = 0;

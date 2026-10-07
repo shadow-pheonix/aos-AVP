@@ -20,3 +20,5 @@ Recorded upstream bases for that migration:
 - native/avos: `c594ce3b4c8c2d1dc7e1dd050812801e2040560f`
 
 Future upstream changes must be reviewed and merged deliberately into these vendored custom trees. They are not automatically overlaid or pulled into the custom build.
+
+GPU upscaling implementation and device validation notes: [Video/UPSCALING.md](Video/UPSCALING.md).
