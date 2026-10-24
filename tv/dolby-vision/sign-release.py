@@ -3,7 +3,6 @@
 import base64
 import os
 from pathlib import Path
-import secrets
 import subprocess
 
 root = Path(__file__).resolve().parents[2]
@@ -13,28 +12,15 @@ store_password = os.environ.get('NOVA_RELEASE_STORE_PASSWORD', '')
 key_password = os.environ.get('NOVA_RELEASE_KEY_PASSWORD', '')
 alias = os.environ.get('NOVA_RELEASE_KEY_ALIAS', '')
 
-if configured:
-    if not store_password or not alias:
-        raise SystemExit('Configured signing requires NOVA_RELEASE_STORE_PASSWORD and NOVA_RELEASE_KEY_ALIAS.')
-    key_password = key_password or store_password
-    key.write_bytes(base64.b64decode(configured, validate=True))
-    mode = 'Configured release signing key'
-else:
-    if store_password or key_password or alias:
-        raise SystemExit('Signing secrets are incomplete: NOVA_RELEASE_KEYSTORE_BASE64 is missing.')
-    store_password = key_password = secrets.token_hex(32)
-    alias = 'nova-tv-release'
-    print(f'::add-mask::{store_password}', flush=True)
-    mode = ('New key generated for this release. Future builds need a persistent signing key '
-            'to install as updates. This private key is not published.')
-
-env = dict(os.environ, SIGN_STORE_PASSWORD=store_password, SIGN_KEY_PASSWORD=key_password)
 if not configured:
-    subprocess.run(['keytool', '-genkeypair', '-noprompt', '-storetype', 'PKCS12',
-                    '-keystore', str(key), '-alias', alias, '-keyalg', 'RSA', '-keysize', '3072',
-                    '-validity', '10000', '-dname', 'CN=NOVA TV Dolby Vision',
-                    '-storepass:env', 'SIGN_STORE_PASSWORD',
-                    '-keypass:env', 'SIGN_KEY_PASSWORD'], env=env, check=True)
+    raise SystemExit('Existing release key required: configure NOVA_RELEASE_KEYSTORE_BASE64 or map the existing secret name in this workflow.')
+if not store_password or not alias:
+    raise SystemExit('Configured signing requires NOVA_RELEASE_STORE_PASSWORD and NOVA_RELEASE_KEY_ALIAS.')
+key_password = key_password or store_password
+key.write_bytes(base64.b64decode(''.join(configured.split()), validate=True))
+mode = 'Existing release signing key from GitHub Actions secrets'
+env = dict(os.environ, SIGN_STORE_PASSWORD=store_password, SIGN_KEY_PASSWORD=key_password)
+
 key.chmod(0o600)
 
 def escape(value):

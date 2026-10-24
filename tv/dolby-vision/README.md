@@ -48,10 +48,9 @@ For a persistent release key, configure these GitHub Actions repository secrets:
 - `NOVA_RELEASE_KEY_ALIAS`: the signing-key alias.
 - `NOVA_RELEASE_KEY_PASSWORD`: optional; defaults to the store password.
 
-When no signing secrets are configured, the workflow generates a new key for
-that release. It does not publish the private key. Subsequent builds will use a
-different certificate and require reinstalling unless persistent signing is
-configured. The release includes `signing-info.txt` identifying which mode was used.
+A configured existing release key is required. The workflow fails before the
+expensive build steps if the key is missing; it never generates a replacement
+key. The release includes `signing-info.txt` and the public certificate.
 
 The workflow resolves submodule URLs to the official NOVA organization, checks
 their exact commit IDs, applies the feature patches, builds libdovi for the host

@@ -44,6 +44,13 @@ jobs:
         with:
           java-version: '17'
           distribution: temurin
+      - name: Configure release signing
+        env:
+          NOVA_RELEASE_KEYSTORE_BASE64: ${{ secrets.NOVA_RELEASE_KEYSTORE_BASE64 }}
+          NOVA_RELEASE_STORE_PASSWORD: ${{ secrets.NOVA_RELEASE_STORE_PASSWORD }}
+          NOVA_RELEASE_KEY_ALIAS: ${{ secrets.NOVA_RELEASE_KEY_ALIAS }}
+          NOVA_RELEASE_KEY_PASSWORD: ${{ secrets.NOVA_RELEASE_KEY_PASSWORD }}
+        run: python3 tv/dolby-vision/sign-release.py
       - name: Install Android SDK and NDK
         shell: bash
         run: |
@@ -61,13 +68,6 @@ jobs:
           rustup default stable
       - name: Build libdovi and test real Dolby Vision conversions
         run: bash tv/dolby-vision/build-libdovi.sh
-      - name: Configure release signing
-        env:
-          NOVA_RELEASE_KEYSTORE_BASE64: ${{ secrets.NOVA_RELEASE_KEYSTORE_BASE64 }}
-          NOVA_RELEASE_STORE_PASSWORD: ${{ secrets.NOVA_RELEASE_STORE_PASSWORD }}
-          NOVA_RELEASE_KEY_ALIAS: ${{ secrets.NOVA_RELEASE_KEY_ALIAS }}
-          NOVA_RELEASE_KEY_PASSWORD: ${{ secrets.NOVA_RELEASE_KEY_PASSWORD }}
-        run: python3 tv/dolby-vision/sign-release.py
       - name: Build universal release APK from this branch
         env:
           MAKE_JOBS: '3'
