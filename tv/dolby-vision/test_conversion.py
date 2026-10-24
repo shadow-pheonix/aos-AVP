@@ -44,7 +44,9 @@ with tempfile.TemporaryDirectory() as work:
     layer_one = b'\x26\x09\x11\x22'
     for original, expected in [('fel_orig.bin', 'fel_to_81.bin'),
                                 ('mel_orig.bin', 'mel_to_81.bin')]:
-        rpu, p81 = fixture(original), fixture(expected)
+        rpu = fixture(original)
+        p81 = ((root / 'native/dovi-compat/fel-profile81.bin').read_bytes()
+               if original == 'fel_orig.bin' else fixture(expected))
         for n in (1, 2, 3, 4):
             # FEL cannot be represented by a one-byte length prefix.
             if max(len(rpu), len(p81)) >= 1 << (8 * n):

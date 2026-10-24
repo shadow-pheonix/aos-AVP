@@ -18,6 +18,9 @@ cargo rustc --locked --release --manifest-path dolby_vision/Cargo.toml \
     --features capi --crate-type staticlib
 mkdir -p "$root/native/dovi-compat/lib/host"
 cp "$CARGO_TARGET_DIR/release/libdolby_vision.a" "$root/native/dovi-compat/lib/host/"
+cp "$root/tv/dolby-vision/reference_fel.rs" dolby_vision/examples/nova_fel_reference.rs
+cargo run --locked --release --manifest-path dolby_vision/Cargo.toml \
+    --example nova_fel_reference -- assets/tests/fel_to_81.bin ../fel-profile81.bin
 python3 "$root/tv/dolby-vision/test_conversion.py" "$root"
 if [[ "${1:-}" == --host-only ]]; then exit 0; fi
 : "${ANDROID_NDK_HOME:?Android NDK must be configured}"

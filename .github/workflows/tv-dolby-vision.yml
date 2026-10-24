@@ -76,6 +76,7 @@ jobs:
           test "${#apks[@]}" -eq 1
           cp "${apks[0]}" artifacts/Nova-TV-Dolby-Vision-debug.apk
           cp tv/dolby-vision/sources.json artifacts/sources.json
+          cp native/dovi-compat/source/LICENSE artifacts/libdovi-LICENSE
           git rev-parse HEAD > artifacts/branch-commit.txt
           (cd artifacts && sha256sum Nova-TV-Dolby-Vision-debug.apk > SHA256.txt)
       - uses: actions/upload-artifact@v4
