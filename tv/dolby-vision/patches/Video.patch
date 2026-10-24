@@ -1,13 +1,14 @@
 --- a/res/values/strings.xml
 +++ b/res/values/strings.xml
-@@ -1102,5 +1102,7 @@
-     <string name="external_player_service_description">Nova Video Player provides content for an external player</string>
-     <string name="stop">Stop</string>
- 
+@@ -610,6 +610,8 @@
+     <string name="preferences_tv_refreshrate_switch_disabled">Disabled</string>
+     <string name="preferences_tv_refreshrate_switch_mode_selection">Display mode selection matching video fps</string>
+     <string name="preferences_tv_refreshrate_switch_match_frame_rate">Android 12+ frame rate matching feature</string>
 +    <string name="preference_dolby_vision_compatibility">Dolby Vision compatibility mode</string>
 +    <string name="preference_dolby_vision_compatibility_summary">Convert Profile 7 to Profile 8.1 during playback for Dolby Vision devices. The enhancement layer is discarded. Reopen the video after changing this setting. Has no effect when Dolby Vision is disabled.</string>
- </resources>
- 
+     <string name="preference_remove_dolby_vision">Disable dolby vision</string>
+     <string name="preference_remove_dolby_vision_summary">Use standard video codecs over dolby vision ones</string>
+     <string name="preference_cutout_short_edges">Fullscreen video with display cutouts</string>
 --- a/res/xml/preferences_video.xml
 +++ b/res/xml/preferences_video.xml
 @@ -142,6 +142,13 @@
