@@ -30,11 +30,28 @@ Playback on physical TV hardware still needs verification.
 
 ## APK build
 
-The **TV Dolby Vision APK** Actions workflow runs only on `tv-dolby-vision`.
-Its artifact `nova-tv-dolby-vision-apk` contains the universal debug APK, its
-SHA-256 checksum, the branch commit, and the source manifest. The APK uses
-NOVA's original application ID and an Android debug signing key; Android may
-require uninstalling an existing differently signed NOVA installation first.
+The **TV Dolby Vision Release** Actions workflow runs only on `tv-dolby-vision`.
+It builds `assembleNoamazonRelease` with `-Puniversal`, verifies the APK signature,
+checks that the app is not debuggable, and checks for all four native ABIs.
+It publishes the APK directly on GitHub Releases alongside its checksum,
+source manifest, branch commit, library license, and public signing certificate.
+No ZIP download is needed.
+
+The APK uses NOVA's original application ID. Android requires matching signing
+certificates for an in-place update, so an existing official or debug APK may
+need to be removed before installation.
+
+For a persistent release key, configure these GitHub Actions repository secrets:
+
+- `NOVA_RELEASE_KEYSTORE_BASE64`: the base64-encoded keystore.
+- `NOVA_RELEASE_STORE_PASSWORD`: its store password.
+- `NOVA_RELEASE_KEY_ALIAS`: the signing-key alias.
+- `NOVA_RELEASE_KEY_PASSWORD`: optional; defaults to the store password.
+
+When no signing secrets are configured, the workflow generates a new key for
+that release. It does not publish the private key. Subsequent builds will use a
+different certificate and require reinstalling unless persistent signing is
+configured. The release includes `signing-info.txt` identifying which mode was used.
 
 The workflow resolves submodule URLs to the official NOVA organization, checks
 their exact commit IDs, applies the feature patches, builds libdovi for the host
@@ -52,7 +69,8 @@ native build packages configured:
 python3 tv/dolby-vision/prepare.py
 bash tv/dolby-vision/build-libdovi.sh
 cd Video
-./gradlew --no-daemon -Puniversal assembleNoamazonDebug
+# Configure Video/keystore.properties with a release signing key first.
+./gradlew --no-daemon -Puniversal assembleNoamazonRelease
 ```
 
 `prepare.py` intentionally fails if source revisions differ or patches are

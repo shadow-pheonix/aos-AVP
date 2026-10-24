@@ -1,4 +1,4 @@
-name: TV Dolby Vision APK
+name: TV Dolby Vision Release
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: tv-dolby-vision-apk
@@ -61,27 +61,53 @@ jobs:
           rustup default stable
       - name: Build libdovi and test real Dolby Vision conversions
         run: bash tv/dolby-vision/build-libdovi.sh
-      - name: Build universal APK from this branch
+      - name: Configure release signing
+        env:
+          NOVA_RELEASE_KEYSTORE_BASE64: ${{ secrets.NOVA_RELEASE_KEYSTORE_BASE64 }}
+          NOVA_RELEASE_STORE_PASSWORD: ${{ secrets.NOVA_RELEASE_STORE_PASSWORD }}
+          NOVA_RELEASE_KEY_ALIAS: ${{ secrets.NOVA_RELEASE_KEY_ALIAS }}
+          NOVA_RELEASE_KEY_PASSWORD: ${{ secrets.NOVA_RELEASE_KEY_PASSWORD }}
+        run: python3 tv/dolby-vision/sign-release.py
+      - name: Build universal release APK from this branch
         env:
           MAKE_JOBS: '3'
         run: |
           cd Video
-          ./gradlew --no-daemon -Puniversal assembleNoamazonDebug
+          ./gradlew --no-daemon -Puniversal assembleNoamazonRelease
       - name: Collect APK and source provenance
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          mapfile -t apks < <(find Video/build/outputs/apk/noamazon/debug -type f -name '*.apk')
+          mapfile -t apks < <(find Video/build/outputs/apk/noamazon/release -type f -name '*.apk')
           test "${#apks[@]}" -eq 1
-          cp "${apks[0]}" artifacts/Nova-TV-Dolby-Vision-debug.apk
+          cp "${apks[0]}" artifacts/Nova-TV-Dolby-Vision-6.4.29-universal.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/Nova-TV-Dolby-Vision-6.4.29-universal.apk
+          test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest debuggable artifacts/Nova-TV-Dolby-Vision-6.4.29-universal.apk)" = "false"
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('artifacts/Nova-TV-Dolby-Vision-6.4.29-universal.apk') as apk:
+              names = set(apk.namelist())
+              for abi in ('armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'):
+                  assert f'lib/{abi}/libavos.so' in names, f'Missing native player: {abi}'
+          print('Verified universal APK native libraries and release manifest.')
+          PY
           cp tv/dolby-vision/sources.json artifacts/sources.json
           cp native/dovi-compat/source/LICENSE artifacts/libdovi-LICENSE
           git rev-parse HEAD > artifacts/branch-commit.txt
-          (cd artifacts && sha256sum Nova-TV-Dolby-Vision-debug.apk > SHA256.txt)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nova-tv-dolby-vision-apk
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 30
+          (cd artifacts && sha256sum Nova-TV-Dolby-Vision-6.4.29-universal.apk > SHA256.txt)
+      - name: Publish APK on GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="tv-dolby-vision-6.4.29-r${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          notes="$RUNNER_TEMP/nova-release-notes.md"
+          cp tv/dolby-vision/release-notes.md "$notes"
+          printf '\nSource commit: `%s`\n\n' "$GITHUB_SHA" >> "$notes"
+          cat artifacts/signing-info.txt >> "$notes"
+          gh release create "$tag" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "NOVA TV Dolby Vision 6.4.29 — universal release" \
+            --notes-file "$notes" --latest=false
