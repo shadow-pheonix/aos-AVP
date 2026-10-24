@@ -1,0 +1,176 @@
+--- a/Include/android_codec.h
++++ b/Include/android_codec.h
+@@ -21,6 +21,7 @@
+  * Android only check if codec is supported
+  */
+ int acodecs_is_type_supported(const char *type, int is_sw_allowed);
++int acodecs_dovi_compatibility_enabled(void);
+ const char* acodecs_get_for_profile(const char *mime_type, int profile);
+ 
+ #endif
+--- a/Source/android_codecs.c
++++ b/Source/android_codecs.c
+@@ -45,6 +45,7 @@
+ static jclass jCodecDiscoveryClass;
+ static jmethodID jCodecSupportedMethod;
+ static jmethodID jGetCodecForProfileMethod;
++static jmethodID jDoViCompatibilityMethod;
+ 
+ void acodecs_init(void) {
+     int willDetach = 0;
+@@ -89,8 +90,36 @@
+         return;
+     }
+ 
++	jDoViCompatibilityMethod = (*env)->GetStaticMethodID(env, jCodecDiscoveryClass,
++		"isDoViCompatibilityEnabled", "()Z");
++	if ((*env)->ExceptionCheck(env)) {
++		(*env)->ExceptionClear(env);
++		jDoViCompatibilityMethod = NULL;
++	}
+ 	if (willDetach)
+ 		(*myVm)->DetachCurrentThread(myVm);
++}
++
++int acodecs_dovi_compatibility_enabled(void)
++{
++	JNIEnv *env = NULL;
++	int detach = 0;
++	jboolean enabled = JNI_FALSE;
++	if (!jCodecDiscoveryClass || !jDoViCompatibilityMethod)
++		return 0;
++	if ((*myVm)->GetEnv(myVm, (void **)&env, JNI_VERSION_1_4) != JNI_OK) {
++		if ((*myVm)->AttachCurrentThread(myVm, &env, NULL) != JNI_OK)
++			return 0;
++		detach = 1;
++	}
++	enabled = (*env)->CallStaticBooleanMethod(env, jCodecDiscoveryClass, jDoViCompatibilityMethod);
++	if ((*env)->ExceptionCheck(env)) {
++		(*env)->ExceptionClear(env);
++		enabled = JNI_FALSE;
++	}
++	if (detach)
++		(*myVm)->DetachCurrentThread(myVm);
++	return enabled == JNI_TRUE;
+ }
+ 
+ int acodecs_is_type_supported(const char *type, int is_sw_allowed)
+--- a/Source/stream_parser_ffmpeg.c
++++ b/Source/stream_parser_ffmpeg.c
+@@ -41,6 +41,7 @@
+ #include <libavformat/avformat.h>
+ #include <libavutil/dict.h>
+ #include <libavutil/dovi_meta.h>
++#include "dovi_compat.h"
+ 
+ #include <string.h>
+ #include <math.h>
+@@ -94,6 +95,8 @@
+ typedef struct FF_PRIV 
+ {
+ 	AVFormatContext *fmt;
++	int dovi_compat[VIDEO_TRACK_MAX];
++	unsigned dovi_length_size[VIDEO_TRACK_MAX];
+         AVDictionary    *fmt_opts;
+ 	
+ 	AVQueue		aq;
+@@ -467,12 +470,25 @@
+                             }
+                         }
+ #ifdef CONFIG_ANDROID
+-                        if(side_data && side_data_size > 0 && acodecs_is_type_supported("video/dolby-vision", 0)) {
++                        if(side_data && side_data_size >= sizeof(AVDOVIDecoderConfigurationRecord) && acodecs_is_type_supported("video/dolby-vision", 0)) {
+ #else
+-                        if(side_data && side_data_size > 0) {
++                        if(side_data && side_data_size >= sizeof(AVDOVIDecoderConfigurationRecord)) {
+ #endif
+                             AVDOVIDecoderConfigurationRecord *dovi_record = (AVDOVIDecoderConfigurationRecord*)side_data;
+                             if (video->format == VIDEO_FORMAT_HEVC) {
++#ifdef CONFIG_ANDROID
++                                if (priv->s && dovi_record->dv_profile == 7 &&
++                                    dovi_record->rpu_present_flag &&
++                                    dovi_record->bl_present_flag &&
++                                    acodecs_dovi_compatibility_enabled()) {
++                                    int slot = priv->av.vs_max - 1;
++                                    priv->dovi_compat[slot] = 1;
++                                    priv->dovi_length_size[slot] =
++                                        codecpar->extradata_size >= 23 && codecpar->extradata[0] == 1
++                                        ? (codecpar->extradata[21] & 3) + 1 : 0;
++                                    serprintf("Dolby Vision compatibility enabled: Profile 7 -> 8.1, stream=%d\n", i);
++                                }
++#endif
+                                 switch(dovi_record->dv_profile) {
+                                     // Mapping source: Kodi's DVDVideoCodecAndroidMediaCodec.cpp
+                                     case 4:
+@@ -1104,6 +1120,36 @@
+ 										packet.data[0], packet.data[1],packet.data[2],packet.data[3]  );
+ DBGC4 serprintf("VIDEO      dts/pts %8lld/%8lld  %s  %02X %02X %02X %02X\r\n", GET_VIDEO_TS( packet.dts ), GET_VIDEO_TS( packet.pts ), (packet.flags & AV_PKT_FLAG_KEY) ? "I" : " ",
+ 										packet.data[0], packet.data[1],packet.data[2],packet.data[3]  );
++		// Conversion is stateless across packets, so seeking needs no cached RPU reset.
++		for (int slot = 0; slot < ff_p->av.vs_max; slot++) {
++			if (ff_p->av.video[slot].stream != stream || !ff_p->dovi_compat[slot])
++				continue;
++			uint8_t *converted = NULL;
++			size_t converted_size = 0;
++			AVPacket result = {0};
++			int ret = nova_dovi_convert(packet.data, packet.size, ff_p->dovi_length_size[slot],
++			                             &converted, &converted_size);
++			if (!ret && converted_size) {
++				ret = av_new_packet(&result, (int)converted_size);
++				if (!ret) {
++					memcpy(result.data, converted, converted_size);
++					ret = av_packet_copy_props(&result, &packet);
++				}
++			}
++			free(converted);
++			if (ret) {
++				serprintf("Dolby Vision compatibility conversion failed (%d); stopping playback\n", ret);
++				av_packet_unref(&result);
++				av_packet_unref(&packet);
++				s->video_parse_end = s->audio_parse_end = 1;
++				return 1;
++			}
++			av_packet_unref(&packet);
++			if (!converted_size)
++				return 0; // enhancement-layer-only packet
++			av_packet_move_ref(&packet, &result);
++			break;
++		}
+ 		// add video packet
+ 		_add_packet( &ff_p->vq, &packet );
+ 		if( timestamp )
+--- a/common.mk
++++ b/common.mk
+@@ -147,6 +147,7 @@
+ CSRC_STREAM_PARSER = \
+ 	stream_parser.c \
+ 	stream_parser_ffmpeg.c \
++	dovi_compat.c \
+ 	dts.c
+ 	
+ CSRC_STREAM_CODEC = \
+--- a/ndkbuild.mk
++++ b/ndkbuild.mk
+@@ -36,6 +36,13 @@
+ LOCAL_EXPORT_C_INCLUDES := $(LIBYUV_DIR)/include
+ include $(PREBUILT_STATIC_LIBRARY)
+ 
++### libdovi (pinned, built by tv/dolby-vision/build-libdovi.sh) ###
++include $(CLEAR_VARS)
++LOCAL_MODULE := nova_dovi
++LOCAL_SRC_FILES := ../dovi-compat/lib/$(TARGET_ARCH_ABI)/libdolby_vision.a
++LOCAL_EXPORT_LDLIBS := -ldl -lm
++include $(PREBUILT_STATIC_LIBRARY)
++
+ ### libavos ###
+ 
+ include $(CLEAR_VARS)
+@@ -62,7 +69,7 @@
+ 	-llog
+ 
+ LOCAL_STATIC_LIBRARIES := $(sort $(addsuffix $(AVOS_LIBS_SUFFIX), $(AVOS_STATIC_LIBS))) \
+-	cpufeatures libyuv
++	cpufeatures libyuv nova_dovi
+ 
+ LOCAL_MODULE := libavos$(AVOS_LIBS_SUFFIX)
+ 

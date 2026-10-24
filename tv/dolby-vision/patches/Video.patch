@@ -1,0 +1,68 @@
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -1102,5 +1102,7 @@
+     <string name="external_player_service_description">Nova Video Player provides content for an external player</string>
+     <string name="stop">Stop</string>
+ 
++    <string name="preference_dolby_vision_compatibility">Dolby Vision compatibility mode</string>
++    <string name="preference_dolby_vision_compatibility_summary">Convert Profile 7 to Profile 8.1 during playback for Dolby Vision devices. The enhancement layer is discarded. Reopen the video after changing this setting. Has no effect when Dolby Vision is disabled.</string>
+ </resources>
+ 
+--- a/res/xml/preferences_video.xml
++++ b/res/xml/preferences_video.xml
+@@ -142,6 +142,13 @@
+             android:persistent="true"
+             android:summary="@string/preference_tv_refreshrate_switch_summary"
+             android:title="@string/preference_tv_refreshrate_switch"
++            app:iconSpaceReserved="false"/>
++        <CheckBoxPreference
++            android:defaultValue="false"
++            android:key="dolby_vision_compatibility"
++            android:persistent="true"
++            android:summary="@string/preference_dolby_vision_compatibility_summary"
++            android:title="@string/preference_dolby_vision_compatibility"
+             app:iconSpaceReserved="false"/>
+         <CheckBoxPreference
+             android:defaultValue="false"
+--- a/src/main/java/com/archos/mediacenter/video/player/Player.java
++++ b/src/main/java/com/archos/mediacenter/video/player/Player.java
+@@ -499,6 +499,8 @@
+ 
+         boolean isDoViDisabled = PreferenceManager.getDefaultSharedPreferences(mContext).getBoolean(VideoPreferencesCommon.KEY_DISABLE_DOLBY_VISION, false);
+         CodecDiscovery.disableDoVi(isDoViDisabled); // could be an autoswitch based on HDR DoVi screen capability
++        CodecDiscovery.setDoViCompatibilityEnabled(PreferenceManager.getDefaultSharedPreferences(mContext)
++                .getBoolean(VideoPreferencesCommon.KEY_DOLBY_VISION_COMPATIBILITY, false));
+ 
+         // we shouldn't clear the target state, because somebody might have
+         // called start() previously
+--- a/src/main/java/com/archos/mediacenter/video/utils/CodecDiscovery.java
++++ b/src/main/java/com/archos/mediacenter/video/utils/CodecDiscovery.java
+@@ -33,7 +33,17 @@
+ 	private static final Logger log = LoggerFactory.getLogger(CodecDiscovery.class);
+ 
+ 	// log4j/logback not possible since used from native it seems
+-	private static boolean isDoViDisabled = false;
++	private static volatile boolean isDoViDisabled = false;
++	private static volatile boolean doViCompatibilityEnabled = false;
++
++	public static void setDoViCompatibilityEnabled(boolean enabled) {
++		doViCompatibilityEnabled = enabled;
++	}
++
++	// Called through JNI when opening a playback stream.
++	public static boolean isDoViCompatibilityEnabled() {
++		return doViCompatibilityEnabled && !isDoViDisabled;
++	}
+ 	private static int hdrCapabilities = 0; // bitmask 0: none, 1: HDR10, 2: HLG, 4: HDR10+, 8: Dolby Vision
+ 
+ 	public static boolean isCodecTypeSupported(String codecType, boolean allowSwCodec) {
+--- a/src/main/java/com/archos/mediacenter/video/utils/VideoPreferencesCommon.java
++++ b/src/main/java/com/archos/mediacenter/video/utils/VideoPreferencesCommon.java
+@@ -146,6 +146,7 @@
+     public static final String KEY_FORCE_AUDIO_PASSTHROUGH = "force_passthrough";
+     public static final String KEY_PARSER_SYNC_MODE = "parser_sync_mode";
+     public static final String KEY_DISABLE_DOLBY_VISION = "disable_dolby_vision";
++    public static final String KEY_DOLBY_VISION_COMPATIBILITY = "dolby_vision_compatibility";
+     public static final String KEY_STREAM_BUFFER_SIZE = "stream_buffer_size";
+     public static final String KEY_STREAM_MAX_IFRAME_SIZE = "stream_max_iframe_size";
+     public static final String KEY_PLAYBACK_SPEED = "playback_speed";

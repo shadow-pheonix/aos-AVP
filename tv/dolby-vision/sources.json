@@ -1,0 +1,32 @@
+{
+  "upstream": "https://github.com/nova-video-player/aos-AVP",
+  "upstream_commit": "eacf19d5ff8de2e250f77a639dfe9c12429ed076",
+  "components": {
+    "FileCoreLibrary": "56fc8dfa00ba25d01fa98bd3aed4398ed3e74efc",
+    "MediaLib": "fba68119be9b704bfa0cad78f7ca8422df0e5cfb",
+    "Video": "4bf05901637678fbc9453a7e10feccd075b34b71",
+    "native/audiocompress": "154785b7635fc431bc1b52744a05cde91df668bb",
+    "native/avos": "c34a05cd070f5aa89c0a26a73d7130d1fdfcd08a",
+    "native/boost": "36719de9fe992fd987e258b5c184f0ce9a06170b",
+    "native/dav1d-android-builder": "a64ceda3b81217b0a0aa4ba39a74e8e8651af6be",
+    "native/ffmpeg-android-builder": "f84c7dda0119a159cb92ecacecffd06630ecfd37",
+    "native/libmysofa-android-builder": "8d712605bdba91b6d1c2d7c15b5a2fc019032a02",
+    "native/libnativehelper": "ab46fb536b594b25f93611ad7ef0f27b8fc24edb",
+    "native/libtorrent-android-builder": "6e9c750096ab01d9b9854dbda5549aafebf765bd",
+    "native/libyuv": "650963473a2568eb81218f6e2703d3efaad6300e",
+    "native/openssl-android-builder": "020b0c1171046665cf0a1612e91ae6d5d969ac28",
+    "native/opus-android-builder": "8a09f7946d8e2ae22c63670fc7c1156df95cc97c",
+    "native/prebuilt/dav1d": "8ee97513523cf04d12dc7740c09cf1db250fe821",
+    "native/prebuilt/ffmpeg": "6da816cfc7cec95cc05305bba3daec46176ff8d9",
+    "native/prebuilt/libmysofa": "6f337d7b622b81aaac23b3fb655021eec276e93b",
+    "native/prebuilt/openssl": "abcb3b6c09a7d866801b12cca0faf8cfbf7379b3",
+    "native/prebuilt/opus": "61f529329031585784a95dd58051215fa8425690",
+    "native/prebuilt/torrentd": "09f3733cf236128be6267b3af972e848acbd5a7a",
+    "native/torrentd": "93e29b80e1b08756ad1a4a2edf093b75d4d9c58a"
+  },
+  "libdovi": {
+    "repository": "https://github.com/quietvoid/dovi_tool",
+    "commit": "26ed61ff36f946313889a09c0d2da202e9ceb97a",
+    "conversion_mode": 2
+  }
+}
